@@ -15,14 +15,19 @@ Multi-output Ridge runs in <1 minute for 2,172 nodes × 287 constraints.
 """
 from pathlib import Path
 
+import sys
+
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
 
 import config
 
+# CLI: python3 d4_attribute_size.py <SEASON_TAG>
 DATA_DIR = Path("data")
 SEASON_TAG = "summer2025"
+if len(sys.argv) >= 2:
+    SEASON_TAG = sys.argv[1]
 
 
 def log(msg):

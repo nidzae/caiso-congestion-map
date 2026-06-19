@@ -14,6 +14,7 @@ Outputs:
   Printed comparison + top-20 by each D
 """
 from pathlib import Path
+import sys
 import time
 
 import numpy as np
@@ -21,8 +22,11 @@ import pandas as pd
 
 import config
 
+# CLI: python3 g2_duration_sweep.py <SEASON_TAG>
 DATA_DIR = Path("data")
 SEASON_TAG = "summer2025"
+if len(sys.argv) >= 2:
+    SEASON_TAG = sys.argv[1]
 DURATIONS = [2, 4, 8]
 ETA = config.ROUND_TRIP_EFFICIENCY
 

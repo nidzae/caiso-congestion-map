@@ -25,9 +25,16 @@ import pandas as pd
 
 import config
 
+# Defaults — overridden if CLI args are passed:
+#   python3 c1_scale_metrics.py <DATE_START> <DATE_END> <SEASON_TAG>
+# e.g.
+#   python3 c1_scale_metrics.py 2025-01-01 2025-02-01 2025-01
 DATE_START = "2025-08-01"
-DATE_END = "2025-09-01"   # exclusive
+DATE_END = "2025-09-01"          # exclusive
 SEASON_TAG = "summer2025"
+if len(sys.argv) >= 4:
+    DATE_START, DATE_END, SEASON_TAG = sys.argv[1], sys.argv[2], sys.argv[3]
+
 BATCH_SIZE = 200
 INTER_BATCH_SLEEP = 1.0
 

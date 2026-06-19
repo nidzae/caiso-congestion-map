@@ -34,6 +34,9 @@ def ceil_int(x):
 
 DATA_DIR = Path("data")
 SEASON_TAG = "summer2025"
+# CLI: python3 f1_render_map.py [SEASON_TAG]
+if len(sys.argv) >= 2 and not sys.argv[1].startswith("-"):
+    SEASON_TAG = sys.argv[1]
 
 # Visual config
 MIN_PIXEL = 4
@@ -59,6 +62,54 @@ ARCHETYPE_LABEL = {
     "RED":    "export pocket",
     "PURPLE": "bidirectional",
 }
+
+
+MONTH_LABELS = {
+    "2025-01": "Jan 25", "2025-02": "Feb 25", "2025-03": "Mar 25",
+    "2025-04": "Apr 25", "2025-05": "May 25", "2025-06": "Jun 25",
+    "2025-07": "Jul 25", "2025-08": "Aug 25", "2025-09": "Sep 25",
+    "2025-10": "Oct 25", "2025-11": "Nov 25", "2025-12": "Dec 25",
+    "summer2025": "Aug 25",  # legacy alias for the original August pull
+}
+MONTH_LONG_LABELS = {
+    "2025-01": "January 2025", "2025-02": "February 2025",
+    "2025-03": "March 2025", "2025-04": "April 2025",
+    "2025-05": "May 2025", "2025-06": "June 2025",
+    "2025-07": "July 2025", "2025-08": "August 2025",
+    "2025-09": "September 2025", "2025-10": "October 2025",
+    "2025-11": "November 2025", "2025-12": "December 2025",
+    "summer2025": "August 2025",
+}
+
+
+def discover_months() -> list[str]:
+    """Find all completed monthly metric tags (have node_metrics_with_size_*.csv
+    AND duration_sweep_*.csv AND node_coordinates_*.csv ready)."""
+    import re
+    pat = re.compile(r"node_metrics_with_size_(.+)\.csv$")
+    tags = []
+    for p in DATA_DIR.iterdir():
+        m = pat.match(p.name)
+        if not m:
+            continue
+        tag = m.group(1)
+        # Require companion files to ensure the renderer can produce a full page
+        if not (DATA_DIR / f"duration_sweep_{tag}.csv").exists():
+            continue
+        if not (DATA_DIR / f"node_coordinates_{tag}.csv").exists():
+            continue
+        tags.append(tag)
+    # Sort by canonical YYYY-MM ordering when possible
+    def sort_key(t):
+        if t in MONTH_LONG_LABELS and t != "summer2025":
+            return t
+        # legacy 'summer2025' maps to 2025-08
+        return "2025-08" if t == "summer2025" else t
+    return sorted(set(tags), key=sort_key)
+
+
+def page_filename(tag: str) -> str:
+    return f"caiso_congestion_map_{tag}.html"
 
 
 def quintile_rank(s: pd.Series) -> pd.Series:
@@ -325,9 +376,26 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def build_month_nav(current_tag: str, all_tags: list[str]) -> str:
+    """Render the month-link bar shown in the page header. If only one month
+    is available, returns an empty string."""
+    if len(all_tags) <= 1:
+        return ""
+    parts = ['<div class="month-nav"><span class="mlabel">Month:</span>']
+    for t in all_tags:
+        cls = "current" if t == current_tag else ""
+        href = page_filename(t)
+        label = MONTH_LABELS.get(t, t)
+        title = MONTH_LONG_LABELS.get(t, t)
+        parts.append(f'<a class="{cls}" href="{href}" title="{title}">{label}</a>')
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def build_page(map_html: str, bar_html: str,
                n_rendered: int, n_total: int, n_bar: int, n_metrics: int,
-               quintile_bounds: dict, trace_colors_by_d: dict) -> str:
+               quintile_bounds: dict, trace_colors_by_d: dict,
+               month_nav_html: str = "", current_tag: str = "") -> str:
     """Wrap the Plotly figure in an HTML shell with a corner legend and a
     slide-in README panel."""
     # Color swatches for the corner legend — sample at the highest quintile
@@ -395,6 +463,18 @@ def build_page(map_html: str, bar_html: str,
   #header button {{ font-size:12px; background:#fff; border:1px solid #aaa;
                     border-radius:4px; padding:5px 10px; cursor:pointer; }}
   #header button:hover {{ background:#f0f0f0; }}
+  /* Month navigation — inside header, between title and tab bar */
+  .month-nav {{ display:flex; gap:0; align-items:center; }}
+  .month-nav .mlabel {{ font-size:10.5px; color:#666; margin-right:6px;
+                         text-transform:uppercase; letter-spacing:0.04em; }}
+  .month-nav a {{ font-size:11px; padding:4px 7px; border:1px solid #aaa;
+                   background:#fff; text-decoration:none; color:#222;
+                   border-right:none; }}
+  .month-nav a:first-of-type {{ border-radius:4px 0 0 4px; }}
+  .month-nav a:last-of-type {{ border-radius:0 4px 4px 0; border-right:1px solid #aaa; }}
+  .month-nav a:hover:not(.current) {{ background:#f0f0f0; }}
+  .month-nav a.current {{ background:#2a6ab8; color:#fff; border-color:#2a6ab8; font-weight:600; }}
+
   /* Tab bar — inside header */
   .tabs {{ display:flex; gap:0; }}
   .tab {{ font-size:12.5px; padding:6px 14px; border:1px solid #aaa; background:#fff;
@@ -474,11 +554,12 @@ def build_page(map_html: str, bar_html: str,
 <div id="header">
   <button id="toggle">📘 How to read this</button>
   <h1>CAISO congestion-relief node map</h1>
+  {month_nav_html}
   <div class="tabs">
     <button class="tab active" data-view="map">🗺 Map ({n_rendered:,})</button>
     <button class="tab" data-view="bar">📊 Ranked (top {n_bar} of {n_metrics:,})</button>
   </div>
-  <span class="meta">summer 2025 · {n_rendered:,} placed · {n_metrics-n_rendered:,} unplaced (in ranked tab only)</span>
+  <span class="meta">{MONTH_LONG_LABELS.get(current_tag, current_tag)} · {n_rendered:,} placed · {n_metrics-n_rendered:,} unplaced (in ranked tab only)</span>
 </div>
 
 <div id="panel">
@@ -997,7 +1078,12 @@ def main():
         else:
             quintile_bounds[arch] = None
 
-    out_html = Path(f"caiso_congestion_map_{SEASON_TAG}.html")
+    all_months = discover_months()
+    month_nav = build_month_nav(SEASON_TAG, all_months)
+    print(f"available months found: {len(all_months)} → month-nav " +
+          ("rendered" if month_nav else "skipped (single month)"))
+
+    out_html = Path(page_filename(SEASON_TAG))
     map_html = fig.to_html(include_plotlyjs="cdn", full_html=False, div_id="map")
     bar_fig = build_bar_chart(df_metrics)
     bar_html = bar_fig.to_html(include_plotlyjs=False, full_html=False, div_id="bar-chart")
@@ -1006,13 +1092,15 @@ def main():
                        n_bar=min(BAR_TOP_N, len(df_metrics)),
                        n_metrics=len(df_metrics),
                        quintile_bounds=quintile_bounds,
-                       trace_colors_by_d=trace_colors_by_d)
+                       trace_colors_by_d=trace_colors_by_d,
+                       month_nav_html=month_nav,
+                       current_tag=SEASON_TAG)
     out_html.write_text(page)
     print(f"saved {out_html.resolve()}")
-    # Also write index.html at the repo root so GitHub Pages serves the map
-    # at the site root URL automatically.
-    Path("index.html").write_text(page)
-    print(f"saved index.html (mirror, for GitHub Pages)")
+    # index.html mirrors the LATEST month so GitHub Pages root shows it.
+    if all_months and SEASON_TAG == all_months[-1]:
+        Path("index.html").write_text(page)
+        print(f"saved index.html (mirror of latest month, for GitHub Pages)")
 
     # ----------------------------------------------------------------------
     # 7. Spike-spread side panel

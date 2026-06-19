@@ -16,6 +16,7 @@ Output:
   data/constraint_summary_summer2025.csv (one row per constraint, with rankings)
 """
 import sys
+import sys
 import time
 from pathlib import Path
 
@@ -25,9 +26,12 @@ import pandas as pd
 
 import config
 
+# CLI: python3 d1_shadow_panel.py <DATE_START> <DATE_END> <SEASON_TAG>
 DATE_START = "2025-08-01"
 DATE_END = "2025-09-01"
 SEASON_TAG = "summer2025"
+if len(sys.argv) >= 4:
+    DATE_START, DATE_END, SEASON_TAG = sys.argv[1], sys.argv[2], sys.argv[3]
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)

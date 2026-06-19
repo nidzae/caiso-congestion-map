@@ -12,6 +12,7 @@ Output: data/constraint_rating_crosswalk_summer2025.csv
 """
 import re
 import sys
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -19,10 +20,13 @@ import pypdf
 
 import config
 
+# CLI: python3 d3_rating_crosswalk.py <SEASON_TAG>
 CATALOG_PDF = Path("data/wecc/2026_path_rating_catalog_public.pdf")
 OUT_PATHS_CSV = Path("data/wecc/wecc_paths_2026.csv")
 DATA_DIR = Path("data")
 SEASON_TAG = "summer2025"
+if len(sys.argv) >= 2:
+    SEASON_TAG = sys.argv[1]
 
 # Add a 70 kV proxy (CAISO uses _70.0_ for some sub-transmission); fold into config
 VOLTAGE_TO_MVA = dict(config.VOLTAGE_TO_MVA)

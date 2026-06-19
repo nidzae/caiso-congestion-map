@@ -23,6 +23,18 @@
   #header button { font-size:12px; background:#fff; border:1px solid #aaa;
                     border-radius:4px; padding:5px 10px; cursor:pointer; }
   #header button:hover { background:#f0f0f0; }
+  /* Month navigation — inside header, between title and tab bar */
+  .month-nav { display:flex; gap:0; align-items:center; }
+  .month-nav .mlabel { font-size:10.5px; color:#666; margin-right:6px;
+                         text-transform:uppercase; letter-spacing:0.04em; }
+  .month-nav a { font-size:11px; padding:4px 7px; border:1px solid #aaa;
+                   background:#fff; text-decoration:none; color:#222;
+                   border-right:none; }
+  .month-nav a:first-of-type { border-radius:4px 0 0 4px; }
+  .month-nav a:last-of-type { border-radius:0 4px 4px 0; border-right:1px solid #aaa; }
+  .month-nav a:hover:not(.current) { background:#f0f0f0; }
+  .month-nav a.current { background:#2a6ab8; color:#fff; border-color:#2a6ab8; font-weight:600; }
+
   /* Tab bar — inside header */
   .tabs { display:flex; gap:0; }
   .tab { font-size:12.5px; padding:6px 14px; border:1px solid #aaa; background:#fff;
@@ -102,11 +114,12 @@
 <div id="header">
   <button id="toggle">📘 How to read this</button>
   <h1>CAISO congestion-relief node map</h1>
+  
   <div class="tabs">
     <button class="tab active" data-view="map">🗺 Map (648)</button>
     <button class="tab" data-view="bar">📊 Ranked (top 100 of 2,003)</button>
   </div>
-  <span class="meta">summer 2025 · 648 placed · 1,355 unplaced (in ranked tab only)</span>
+  <span class="meta">August 2025 · 648 placed · 1,355 unplaced (in ranked tab only)</span>
 </div>
 
 <div id="panel">

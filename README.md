@@ -9,8 +9,7 @@ tool*; it ranks candidate locations from public data, it does **not** confirm
 deliverable relief (that requires a network-model run with PTDFs, out of
 scope here).
 
-**🌐 Live interactive map:** *(GitHub Pages URL — populate after enabling
-Pages in repo settings)*
+**🌐 Live interactive map:** **https://nidzae.github.io/caiso-congestion-map/**
 
 ![placed nodes](data/placed_gen_nodes_summer2025.png)
 

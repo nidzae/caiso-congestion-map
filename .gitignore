@@ -17,6 +17,9 @@ data/shadow_panel_summer*.parquet
 data/rtm_5min_*.parquet
 data/rtm_hourly_*.parquet
 data/c1_run.log
+data/pull_all_months.log
+data/auto_publish.log
+data/*.log
 
 # Downloaded source data — pull again from the upstream URLs.
 data/eia/

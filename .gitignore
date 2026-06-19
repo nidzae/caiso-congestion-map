@@ -1,0 +1,23 @@
+# OS / editor
+.DS_Store
+.claude/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Cached raw data — regeneratable from the scripts in this repo.
+data/mcc_raw/
+data/mcc_days/
+data/mcc_wide_*.parquet
+data/itc_raw_*.parquet
+data/nom_raw_*.parquet
+data/shadow_panel_wide_*.parquet
+data/shadow_panel_summer*.parquet
+data/rtm_5min_*.parquet
+data/rtm_hourly_*.parquet
+data/c1_run.log
+
+# Downloaded source data — pull again from the upstream URLs.
+data/eia/
+data/wecc/

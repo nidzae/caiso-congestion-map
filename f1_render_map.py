@@ -112,6 +112,49 @@ def page_filename(tag: str) -> str:
     return f"caiso_congestion_map_{tag}.html"
 
 
+def global_quintile_bounds(tags: list[str]) -> dict | None:
+    """Return per-(archetype, duration) cutpoint arrays such that a node's
+    spread value maps to the same quintile (and therefore the same saturation
+    color) regardless of which month is being rendered.
+
+    Cutpoints are the [0, 20, 40, 60, 80, 100] percentiles of spread_D{D}
+    values restricted to that archetype, pooled across every month.
+    Returns {archetype: {D: [c0..c5]}} or None if only a single month exists
+    (per-month bounds remain fine in that case).
+    """
+    if len(tags) <= 1:
+        return None
+    import numpy as np
+
+    # Gather (archetype, D, spread) triples across all months.
+    pooled: dict[tuple[str, int], list] = {}
+    for t in tags:
+        m_path = DATA_DIR / f"node_metrics_with_size_{t}.csv"
+        d_path = DATA_DIR / f"duration_sweep_{t}.csv"
+        if not (m_path.exists() and d_path.exists()):
+            continue
+        m = pd.read_csv(m_path, usecols=["archetype"] + ["node"] if False else ["archetype"],
+                         index_col=0)
+        # Re-read with index for join
+        m = pd.read_csv(m_path, index_col=0)[["archetype"]]
+        d = pd.read_csv(d_path, index_col=0)[[f"spread_D{D}" for D in DURATIONS]]
+        df = m.join(d, how="inner")
+        for arch in df["archetype"].dropna().unique():
+            sub = df[df["archetype"] == arch]
+            for D in DURATIONS:
+                vals = sub[f"spread_D{D}"].dropna().values
+                pooled.setdefault((arch, D), []).extend(vals.tolist())
+
+    out: dict = {}
+    qs = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    for (arch, D), vals in pooled.items():
+        if len(vals) < 5:
+            continue
+        cuts = list(np.quantile(vals, qs))
+        out.setdefault(arch, {})[D] = cuts
+    return out
+
+
 def global_size_range(tags: list[str]) -> tuple[float, float] | None:
     """Scan every month's metric file and return the global (min, max) of
     sqrt(size_node), so per-month pixel sizes are comparable across months.
@@ -941,14 +984,32 @@ def main():
         alpha = alpha_lo + (alpha_hi - alpha_lo) * (q / max(1, N_QUINTILES - 1))
         return rgba_string(cmap_name, level, alpha)
 
-    # Per-archetype quintile rank + color, per duration
+    # Per-archetype quintile rank + color, per duration.
+    # If multi-month data exists, use GLOBAL cutpoints (pooled across months)
+    # so a given $/MWh spread maps to the same color in every month.
+    g_quintiles = global_quintile_bounds(discover_months())
+
+    def quintile_with_cuts(values: pd.Series, cuts: list[float]) -> pd.Series:
+        # cuts = [q0, q1, q2, q3, q4, q5] inclusive boundaries
+        bins = cuts.copy()
+        # Make outer edges open
+        bins[0] = -float("inf")
+        bins[-1] = float("inf")
+        out = pd.cut(values, bins=bins, labels=False, include_lowest=True)
+        return out.fillna(0).astype(int)
+
     for D in DURATIONS:
         col_q = f"q_rank_D{D}"
         col_c = f"color_D{D}"
         df_metrics[col_q] = 0
         for arch in df_metrics["archetype"].unique():
             mask = df_metrics["archetype"] == arch
-            df_metrics.loc[mask, col_q] = quintile_rank(df_metrics.loc[mask, f"spread_D{D}"])
+            vals = df_metrics.loc[mask, f"spread_D{D}"]
+            if g_quintiles and arch in g_quintiles and D in g_quintiles[arch]:
+                cuts = g_quintiles[arch][D]
+                df_metrics.loc[mask, col_q] = quintile_with_cuts(vals, cuts).values
+            else:
+                df_metrics.loc[mask, col_q] = quintile_rank(vals).values
         df_metrics[col_c] = [node_color(a, q)
                               for a, q in zip(df_metrics["archetype"], df_metrics[col_q])]
 
@@ -1108,16 +1169,22 @@ def main():
                     bgcolor="rgba(255,255,255,0.85)"),
     )
 
-    # Compute per-archetype quintile boundaries from the actual data (for the
-    # gradient bars in the README panel).
+    # Quintile bounds for the README gradient bars. Use global pooled
+    # bounds (across all months) if multi-month, otherwise this month's.
+    # We display the DEFAULT_DURATION (4 h) bucket in the README.
     quintile_bounds = {}
-    quintile_qs = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
-    for arch in ARCHETYPE_CMAP:
-        sub = df_metrics.loc[df_metrics["archetype"] == arch, "spread"]
-        if len(sub) >= 5:
-            quintile_bounds[arch] = sub.quantile(quintile_qs).tolist()
-        else:
-            quintile_bounds[arch] = None
+    if g_quintiles is not None:
+        for arch in ARCHETYPE_CMAP:
+            cuts = g_quintiles.get(arch, {}).get(DEFAULT_DURATION)
+            quintile_bounds[arch] = cuts
+    else:
+        quintile_qs = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        for arch in ARCHETYPE_CMAP:
+            sub = df_metrics.loc[df_metrics["archetype"] == arch, "spread"]
+            if len(sub) >= 5:
+                quintile_bounds[arch] = sub.quantile(quintile_qs).tolist()
+            else:
+                quintile_bounds[arch] = None
 
     all_months = discover_months()
     month_nav = build_month_nav(SEASON_TAG, all_months)

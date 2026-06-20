@@ -112,6 +112,32 @@ def page_filename(tag: str) -> str:
     return f"caiso_congestion_map_{tag}.html"
 
 
+def global_size_range(tags: list[str]) -> tuple[float, float] | None:
+    """Scan every month's metric file and return the global (min, max) of
+    sqrt(size_node), so per-month pixel sizes are comparable across months.
+    Returns None if only one tag is available (fall back to per-month range).
+    Caps the max at the 99th percentile to keep one freak outlier (e.g., a
+    bad rating crosswalk match) from compressing the whole scale."""
+    if len(tags) <= 1:
+        return None
+    import numpy as np
+    sqrts = []
+    for t in tags:
+        p = DATA_DIR / f"node_metrics_with_size_{t}.csv"
+        if not p.exists():
+            continue
+        s = pd.read_csv(p, usecols=["size_node"])["size_node"].dropna()
+        if not len(s):
+            continue
+        sqrts.append(np.sqrt(s.clip(lower=0).values))
+    if not sqrts:
+        return None
+    all_sqrt = np.concatenate(sqrts)
+    s_min = float(all_sqrt.min())
+    s_max = float(np.quantile(all_sqrt, 0.99))  # cap at p99 to ignore freaks
+    return s_min, s_max
+
+
 def quintile_rank(s: pd.Series) -> pd.Series:
     """0..N_QUINTILES-1 quintile index per element; NaNs return 0."""
     valid = s.dropna()
@@ -931,10 +957,25 @@ def main():
     df_metrics["color"] = df_metrics[f"color_D{DEFAULT_DURATION}"]
 
     df_metrics["sqrt_size"] = np.sqrt(df_metrics["size_node"].clip(lower=0))
-    s_min, s_max = float(df_metrics["sqrt_size"].min()), float(df_metrics["sqrt_size"].max())
+    # If multiple months exist, normalize against the GLOBAL sqrt-size range
+    # so dollar-equivalent constraints render at the same pixel size across
+    # months (otherwise a single outlier month can make all other months
+    # look like tiny dots).
+    all_months_for_scaling = discover_months()
+    g = global_size_range(all_months_for_scaling)
+    if g is not None:
+        s_min, s_max = g
+    else:
+        s_min = float(df_metrics["sqrt_size"].min())
+        s_max = float(df_metrics["sqrt_size"].max())
     if s_max > s_min:
-        df_metrics["pixel_size"] = (MIN_PIXEL + (df_metrics["sqrt_size"] - s_min)
-                                    / (s_max - s_min) * (MAX_PIXEL - MIN_PIXEL))
+        # Clip so freak-outlier nodes (above the global p99) cap at MAX_PIXEL
+        # rather than blowing past it.
+        df_metrics["pixel_size"] = (
+            MIN_PIXEL +
+            ((df_metrics["sqrt_size"] - s_min) / (s_max - s_min)).clip(lower=0, upper=1)
+            * (MAX_PIXEL - MIN_PIXEL)
+        )
     else:
         df_metrics["pixel_size"] = (MIN_PIXEL + MAX_PIXEL) / 2
 

@@ -1170,6 +1170,10 @@ def main():
 
     # Center the view on California.
     # NB: duration buttons live in HTML (over the map div) — see build_page.
+    # The bottom-left #legend box is the authoritative key (consistent across
+    # months and durations). Plotly's auto-legend would sample per-trace
+    # marker colors/sizes that change with the underlying data — misleading
+    # because color/size are per-node encodings, not per-trace classifications.
     fig.update_layout(
         map=dict(
             style="open-street-map",
@@ -1177,9 +1181,7 @@ def main():
             zoom=5.4,
         ),
         margin=dict(l=0, r=0, t=0, b=0),
-        legend=dict(orientation="h", yanchor="bottom", y=0.0,
-                    xanchor="center", x=0.5,
-                    bgcolor="rgba(255,255,255,0.85)"),
+        showlegend=False,
     )
 
     # Quintile bounds for the README gradient bars. Use global pooled

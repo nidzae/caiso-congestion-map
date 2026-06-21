@@ -39,11 +39,11 @@ if len(sys.argv) >= 2 and not sys.argv[1].startswith("-"):
     SEASON_TAG = sys.argv[1]
 
 # Visual config
-MIN_PIXEL = 4
-MAX_PIXEL = 22
+MIN_PIXEL = 7
+MAX_PIXEL = 30
 N_QUINTILES = 5
 SPIKE_PERCENTILE = 0.99
-BAR_TOP_N = 100
+BAR_TOP_N = None           # None = show every metrics-ready node
 DURATIONS = [2, 4, 8]      # battery durations (hours) for the selector
 DEFAULT_DURATION = 4       # initial view on page load
 
@@ -215,10 +215,11 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
           line; size_node doesn't depend on D, so this view has no D variant.
     Includes unplaced nodes in view (1).
     """
-    # ----- View 1: nodes by spread, grouped 3 bars per node -----
-    by_spread = (metrics_df
-                  .sort_values(f"spread_D{DEFAULT_DURATION}", ascending=False)
-                  .head(BAR_TOP_N).copy())
+    # ----- View 1: every metrics-ready node, one composite bar each -----
+    by_spread = metrics_df.sort_values(f"spread_D{DEFAULT_DURATION}",
+                                         ascending=False).copy()
+    if BAR_TOP_N is not None:
+        by_spread = by_spread.head(BAR_TOP_N)
 
     def make_node_hovertext(d: pd.DataFrame, D: int) -> list:
         out = []
@@ -282,9 +283,10 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             example_nodes=("size_node", lambda s: ", ".join(s.index.astype(str)[:5])),
         )
         .sort_values("size", ascending=False)
-        .head(BAR_TOP_N)
         .copy()
     )
+    if BAR_TOP_N is not None:
+        grouped = grouped.head(BAR_TOP_N)
 
     def short_label(line_key: str, maxlen: int = 55) -> str:
         # strip the NOM:/ITC: prefix for readability
@@ -406,15 +408,21 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
         visible=False, showlegend=False,
     ))
 
+    # Bar height shrinks as N grows so the page stays usable. Top-100 ≈ 18px,
+    # 2k+ nodes ≈ 6px each.
+    n_bars_view1 = len(by_spread)
+    per_bar_px = max(6, min(18, int(2000 / max(1, n_bars_view1))))
+    fig_height = max(700, per_bar_px * n_bars_view1 + 120)
+
     fig.update_layout(
         barmode="stack",
-        bargap=0.25,
+        bargap=0.20,
         showlegend=True,
         legend=dict(orientation="h", yanchor="top", y=1.06,
                     xanchor="right", x=1.0,
                     title=dict(text="Composite bar segments:")),
         margin=dict(l=320, r=20, t=90, b=50),
-        height=max(700, 18 * BAR_TOP_N + 120),
+        height=fig_height,
         yaxis=dict(
             autorange="reversed",
             tickfont=dict(size=10),
@@ -473,6 +481,7 @@ def build_month_nav(current_tag: str, all_tags: list[str]) -> str:
 def build_page(map_html: str, bar_html: str,
                n_rendered: int, n_total: int, n_bar: int, n_metrics: int,
                quintile_bounds: dict, trace_colors_by_d: dict,
+               arch_trace_indices: dict | None = None,
                month_nav_html: str = "", current_tag: str = "") -> str:
     """Wrap the Plotly figure in an HTML shell with a corner legend and a
     slide-in README panel."""
@@ -515,6 +524,8 @@ def build_page(map_html: str, bar_html: str,
     active_class = {D: (" active" if D == DEFAULT_DURATION else "") for D in DURATIONS}
     # Per-D color arrays embedded as JSON for client-side restyling
     duration_colors_json = json.dumps({str(D): trace_colors_by_d[D] for D in DURATIONS})
+    # Per-archetype trace indices — for click-to-toggle visibility in the legend
+    arch_traces_json = json.dumps(arch_trace_indices or {})
 
     return f"""<!doctype html>
 <html lang="en">
@@ -622,6 +633,13 @@ def build_page(map_html: str, bar_html: str,
   #legend .row {{ display:flex; align-items:center; gap:8px; margin:3px 0; }}
   #legend .swatch {{ display:inline-block; width:14px; height:14px; border-radius:50%;
                      border:1px solid rgba(0,0,0,0.25); flex-shrink:0; }}
+  /* Clickable archetype rows in the legend — toggle visibility on the map */
+  #legend .row.toggleable {{ cursor:pointer; user-select:none;
+                              padding:1px 4px; border-radius:3px; transition:background 0.1s; }}
+  #legend .row.toggleable:hover {{ background:rgba(0,0,0,0.05); }}
+  #legend .row.off {{ opacity:0.35; text-decoration:line-through; }}
+  #legend .row.off .swatch {{ background:#ccc !important;
+                                border-color:rgba(0,0,0,0.15) !important; }}
   #legend .size-scale {{ display:flex; align-items:center; gap:6px; margin-top:4px; }}
   #legend .size-dot {{ background:#888; border-radius:50%; display:inline-block;
                        border:1px solid rgba(0,0,0,0.25); }}
@@ -895,11 +913,11 @@ hollow marker if  conc > 0.5</code>
 </div>
 
 <div id="legend">
-  <h4>Legend</h4>
-  <div class="row"><span class="swatch" style="background:{color_w}"></span>no local congestion</div>
-  <div class="row"><span class="swatch" style="background:{color_b}"></span>import pocket (evening)</div>
-  <div class="row"><span class="swatch" style="background:{color_r}"></span>export pocket (midday)</div>
-  <div class="row"><span class="swatch" style="background:{color_p}"></span>bidirectional (double-duty)</div>
+  <h4>Legend <span style="font-weight:400;color:#777;font-size:10px">— click a row to toggle that archetype on the map</span></h4>
+  <div class="row toggleable" data-arch="WHITE"><span class="swatch" style="background:{color_w}"></span>no local congestion</div>
+  <div class="row toggleable" data-arch="BLUE"><span class="swatch" style="background:{color_b}"></span>import pocket (evening)</div>
+  <div class="row toggleable" data-arch="RED"><span class="swatch" style="background:{color_r}"></span>export pocket (midday)</div>
+  <div class="row toggleable" data-arch="PURPLE"><span class="swatch" style="background:{color_p}"></span>bidirectional (double-duty)</div>
   <div class="row" style="margin-top:8px"><i>color saturation</i> &nbsp;→ spread quintile (within archetype)</div>
   <div class="row"><i>circle size</i> &nbsp;→ √(constraint rent on k*)</div>
   <div class="size-scale" style="margin-top:4px">
@@ -929,10 +947,10 @@ hollow marker if  conc > 0.5</code>
   // Battery-duration picker (drives map marker.color via Plotly.restyle)
   const D_COLORS = {duration_colors_json};
   const dbtns = document.querySelectorAll("#duration-picker .dbtn");
-  dbtns.forEach(btn => {{
-    btn.addEventListener("click", () => {{
-      const d = btn.dataset.d;
-      dbtns.forEach(b => b.classList.toggle("active", b === btn));
+  dbtns.forEach(b => {{
+    b.addEventListener("click", () => {{
+      const d = b.dataset.d;
+      dbtns.forEach(x => x.classList.toggle("active", x === b));
       const mapDiv = document.getElementById("map");
       if (window.Plotly && mapDiv && D_COLORS[d]) {{
         Plotly.restyle(mapDiv, {{ "marker.color": D_COLORS[d] }});
@@ -940,23 +958,56 @@ hollow marker if  conc > 0.5</code>
     }});
   }});
 
-  // Tab switching
+  // Click-to-toggle archetype visibility on the map.
+  const ARCH_TRACES = {arch_traces_json};
+  document.querySelectorAll("#legend .row.toggleable").forEach(row => {{
+    row.addEventListener("click", () => {{
+      const arch = row.dataset.arch;
+      const traces = ARCH_TRACES[arch] || [];
+      if (!traces.length) return;
+      const isOff = row.classList.toggle("off");
+      const visibleVal = !isOff;
+      const mapDiv = document.getElementById("map");
+      if (window.Plotly && mapDiv) {{
+        Plotly.restyle(mapDiv, {{ "visible": visibleVal }}, traces);
+      }}
+    }});
+  }});
+
+  // Tab switching + URL-hash persistence (so jumping to a different month
+  // from the bar tab stays on the bar tab).
   const tabs = document.querySelectorAll(".tab");
   const views = document.querySelectorAll(".view");
   const legendBox = document.getElementById("legend");
   function activate(viewName) {{
     tabs.forEach(t => t.classList.toggle("active", t.dataset.view === viewName));
     views.forEach(v => v.classList.toggle("active", v.id === ("view-" + viewName)));
-    // Hide the floating legend on the bar tab (no spatial meaning there)
     legendBox.style.display = (viewName === "map") ? "block" : "none";
-    // Force the newly-visible Plotly figure to re-fit its container
     const figId = (viewName === "map") ? "map" : "bar-chart";
     if (window.Plotly) {{
       const el = document.getElementById(figId);
       if (el) Plotly.Plots.resize(el);
     }}
   }}
-  tabs.forEach(t => t.addEventListener("click", () => activate(t.dataset.view)));
+  tabs.forEach(t => t.addEventListener("click", () => {{
+    activate(t.dataset.view);
+    history.replaceState(null, "", "#" + t.dataset.view);
+  }}));
+  // On load: respect the URL hash if it requests bar
+  const initialHash = (window.location.hash || "").replace("#", "");
+  if (initialHash === "bar") activate("bar");
+
+  // Month-nav links carry the current hash, so the new month's page opens on
+  // the same tab the user was on.
+  document.querySelectorAll(".month-nav a").forEach(a => {{
+    a.addEventListener("click", (e) => {{
+      const h = window.location.hash;
+      if (h) {{
+        e.preventDefault();
+        window.location.href = a.getAttribute("href") + h;
+      }}
+    }});
+  }});
 </script>
 
 </body>
@@ -1095,6 +1146,12 @@ def main():
     # Track per-trace per-duration color arrays so the D selector can restyle.
     # Each entry is what marker.color should be for that trace at that D.
     trace_colors_by_d: dict[int, list] = {D: [] for D in DURATIONS}
+    # Track which trace indices belong to each archetype so the bottom-left
+    # legend can toggle visibility per archetype (Plotly.restyle with visible
+    # array). We treat the hollow-inner white traces as belonging to their
+    # archetype too so they hide together.
+    arch_trace_indices: dict[str, list[int]] = {a: [] for a in order}
+    trace_idx = 0
 
     for arch in order:
         sub = placed[placed["archetype"] == arch]
@@ -1140,6 +1197,8 @@ def main():
             ))
             for D in DURATIONS:
                 trace_colors_by_d[D].append(filled[f"color_D{D}"].tolist())
+            arch_trace_indices[arch].append(trace_idx)
+            trace_idx += 1
 
         if not hollow.empty:
             mask = sub["marker"] == "hollow"
@@ -1156,6 +1215,8 @@ def main():
             ))
             for D in DURATIONS:
                 trace_colors_by_d[D].append(hollow[f"color_D{D}"].tolist())
+            arch_trace_indices[arch].append(trace_idx)
+            trace_idx += 1
             fig.add_trace(go.Scattermap(
                 lat=hollow["Latitude"],
                 lon=hollow["Longitude"],
@@ -1167,6 +1228,8 @@ def main():
             ))
             for D in DURATIONS:
                 trace_colors_by_d[D].append("white")
+            arch_trace_indices[arch].append(trace_idx)
+            trace_idx += 1
 
     # Center the view on California.
     # NB: duration buttons live in HTML (over the map div) — see build_page.
@@ -1210,12 +1273,14 @@ def main():
     map_html = fig.to_html(include_plotlyjs="cdn", full_html=False, div_id="map")
     bar_fig = build_bar_chart(df_metrics)
     bar_html = bar_fig.to_html(include_plotlyjs=False, full_html=False, div_id="bar-chart")
+    n_bar_view = len(df_metrics) if BAR_TOP_N is None else min(BAR_TOP_N, len(df_metrics))
     page = build_page(map_html, bar_html,
                        n_rendered=len(placed), n_total=total_nodes,
-                       n_bar=min(BAR_TOP_N, len(df_metrics)),
+                       n_bar=n_bar_view,
                        n_metrics=len(df_metrics),
                        quintile_bounds=quintile_bounds,
                        trace_colors_by_d=trace_colors_by_d,
+                       arch_trace_indices=arch_trace_indices,
                        month_nav_html=month_nav,
                        current_tag=SEASON_TAG)
     out_html.write_text(page)

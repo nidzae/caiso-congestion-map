@@ -65,6 +65,7 @@ ARCHETYPE_LABEL = {
 
 
 MONTH_LABELS = {
+    "2025-full": "Full year",
     "2025-01": "Jan 25", "2025-02": "Feb 25", "2025-03": "Mar 25",
     "2025-04": "Apr 25", "2025-05": "May 25", "2025-06": "Jun 25",
     "2025-07": "Jul 25", "2025-08": "Aug 25", "2025-09": "Sep 25",
@@ -72,6 +73,7 @@ MONTH_LABELS = {
     "summer2025": "Aug 25",  # legacy alias for the original August pull
 }
 MONTH_LONG_LABELS = {
+    "2025-full": "Full year 2025 (aggregated across all months)",
     "2025-01": "January 2025", "2025-02": "February 2025",
     "2025-03": "March 2025", "2025-04": "April 2025",
     "2025-05": "May 2025", "2025-06": "June 2025",
@@ -80,6 +82,9 @@ MONTH_LONG_LABELS = {
     "2025-11": "November 2025", "2025-12": "December 2025",
     "summer2025": "August 2025",
 }
+# The Full Year view is always the first nav entry and the default landing
+# page (mirrored to index.html).
+FULL_YEAR_TAG = "2025-full"
 
 
 def discover_months() -> list[str]:
@@ -99,12 +104,13 @@ def discover_months() -> list[str]:
         if not (DATA_DIR / f"node_coordinates_{tag}.csv").exists():
             continue
         tags.append(tag)
-    # Sort by canonical YYYY-MM ordering when possible
+    # FULL_YEAR_TAG is always first; the rest sort by canonical YYYY-MM.
     def sort_key(t):
-        if t in MONTH_LONG_LABELS and t != "summer2025":
-            return t
-        # legacy 'summer2025' maps to 2025-08
-        return "2025-08" if t == "summer2025" else t
+        if t == FULL_YEAR_TAG:
+            return ""  # sorts before any "2025-MM"
+        if t == "summer2025":
+            return "2025-08"  # legacy alias
+        return t
     return sorted(set(tags), key=sort_key)
 
 
@@ -450,9 +456,12 @@ def build_month_nav(current_tag: str, all_tags: list[str]) -> str:
     is available, returns an empty string."""
     if len(all_tags) <= 1:
         return ""
-    parts = ['<div class="month-nav"><span class="mlabel">Month:</span>']
+    parts = ['<div class="month-nav"><span class="mlabel">View:</span>']
     for t in all_tags:
-        cls = "current" if t == current_tag else ""
+        classes = []
+        if t == current_tag: classes.append("current")
+        if t == FULL_YEAR_TAG: classes.append("full-year")
+        cls = " ".join(classes)
         href = page_filename(t)
         label = MONTH_LABELS.get(t, t)
         title = MONTH_LONG_LABELS.get(t, t)
@@ -543,6 +552,10 @@ def build_page(map_html: str, bar_html: str,
   .month-nav a:last-of-type {{ border-radius:0 4px 4px 0; border-right:1px solid #aaa; }}
   .month-nav a:hover:not(.current) {{ background:#f0f0f0; }}
   .month-nav a.current {{ background:#2a6ab8; color:#fff; border-color:#2a6ab8; font-weight:600; }}
+  .month-nav a.full-year {{ font-weight:600; background:#fafafa; }}
+  .month-nav a.full-year + a {{ margin-left:6px; border-left:1px solid #aaa;
+                                  border-radius:4px 0 0 4px; }}
+  .month-nav a.full-year {{ border-radius:4px !important; border-right:1px solid #aaa; }}
 
   /* Tab bar — inside header */
   .tabs {{ display:flex; gap:0; }}
@@ -1205,10 +1218,15 @@ def main():
                        current_tag=SEASON_TAG)
     out_html.write_text(page)
     print(f"saved {out_html.resolve()}")
-    # index.html mirrors the LATEST month so GitHub Pages root shows it.
-    if all_months and SEASON_TAG == all_months[-1]:
+    # index.html mirrors the FULL YEAR view (default landing page).
+    # If the Full Year aggregate hasn't been built yet, fall back to the
+    # latest available month so the site still has a root page.
+    index_target = FULL_YEAR_TAG if FULL_YEAR_TAG in all_months else (
+        all_months[-1] if all_months else None
+    )
+    if SEASON_TAG == index_target:
         Path("index.html").write_text(page)
-        print(f"saved index.html (mirror of latest month, for GitHub Pages)")
+        print(f"saved index.html (mirror of {index_target}, for GitHub Pages root)")
 
     # ----------------------------------------------------------------------
     # 7. Spike-spread side panel

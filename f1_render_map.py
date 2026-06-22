@@ -306,6 +306,39 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     if BAR_TOP_N is not None:
         grouped = grouped.head(BAR_TOP_N)
 
+    # Constraint-view divider — same idea as the node view
+    if "n_tpp_projects" in grouped.columns:
+        grp_relief = (grouped["n_tpp_projects"].fillna(0) > 0).values
+    else:
+        grp_relief = pd.Series([False] * len(grouped)).values
+    g_boundary = None
+    for i, rf in enumerate(grp_relief):
+        if rf:
+            g_boundary = i
+            break
+    divider_shapes_grouped = []
+    divider_annotations_grouped = []
+    if g_boundary is not None and g_boundary > 0 and grp_relief.any():
+        n_unrel = int((~grp_relief).sum())
+        n_rel = int(grp_relief.sum())
+        boundary_y = g_boundary - 0.5
+        divider_shapes_grouped.append(dict(
+            type="line",
+            xref="paper", x0=0, x1=1,
+            yref="y", y0=boundary_y, y1=boundary_y,
+            line=dict(color="#b8552a", width=2, dash="dash"),
+        ))
+        divider_annotations_grouped.append(dict(
+            x=0, xref="paper", xanchor="left",
+            y=boundary_y, yref="y", yanchor="bottom",
+            text=(f"&nbsp; ⏷ <b>{n_rel} constraint(s) with planned TPP relief below</b> "
+                  f"(top {n_unrel} are unfunded prizes)"),
+            showarrow=False,
+            bgcolor="rgba(255,230,210,0.94)",
+            bordercolor="#b8552a", borderwidth=1, borderpad=4,
+            font=dict(size=11, color="#7a3a1c"),
+        ))
+
     def short_label(line_key: str, maxlen: int = 55) -> str:
         # strip the NOM:/ITC: prefix for readability
         s = line_key.split(":", 1)[-1].strip()
@@ -486,9 +519,47 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     per_bar_px = max(6, min(18, int(2000 / max(1, n_bars_view1))))
     fig_height = max(700, per_bar_px * n_bars_view1 + 120)
 
+    # Find the boundary where unrelieved nodes end and relieved begin
+    # (default sort puts unrelieved on top, then relieved).
+    relief_flags_sorted = by_spread.get("has_tpp_relief",
+        pd.Series(False, index=by_spread.index)).fillna(False).astype(bool).values
+    boundary_idx = None
+    for i, rf in enumerate(relief_flags_sorted):
+        if rf:
+            boundary_idx = i
+            break
+    n_unrelieved = (~relief_flags_sorted).sum() if len(relief_flags_sorted) else 0
+    n_relieved = int(relief_flags_sorted.sum()) if len(relief_flags_sorted) else 0
+
+    divider_shapes = []
+    divider_annotations = []
+    if boundary_idx is not None and boundary_idx > 0 and n_relieved > 0:
+        # Plotly categorical y-axis: each category sits at integer y. Reversed
+        # range (autorange='reversed') means index 0 is at the TOP. The first
+        # relieved bar is at y = boundary_idx; the boundary line goes ABOVE it.
+        boundary_y = boundary_idx - 0.5
+        divider_shapes.append(dict(
+            type="line",
+            xref="paper", x0=0, x1=1,
+            yref="y", y0=boundary_y, y1=boundary_y,
+            line=dict(color="#b8552a", width=2, dash="dash"),
+        ))
+        divider_annotations.append(dict(
+            x=0, xref="paper", xanchor="left",
+            y=boundary_y, yref="y", yanchor="bottom",
+            text=(f"&nbsp; ⏷ <b>{n_relieved:,} constraint(s) with planned TPP relief below</b> "
+                  f"(top {n_unrelieved:,} are unfunded — bigger 'unrelieved prize' for siting)"),
+            showarrow=False,
+            bgcolor="rgba(255,230,210,0.94)",
+            bordercolor="#b8552a", borderwidth=1, borderpad=4,
+            font=dict(size=11, color="#7a3a1c"),
+        ))
+
     fig.update_layout(
         barmode="stack",
         bargap=0.20,
+        shapes=divider_shapes,
+        annotations=divider_annotations,
         showlegend=True,
         legend=dict(orientation="h", yanchor="top", y=1.06,
                     xanchor="right", x=1.0,
@@ -515,7 +586,9 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
                          {"visible": [True, True, True, False]},
                          {"xaxis.title.text": "spread ($/MWh) — stacked: D=2 base + 4h increment + 8h increment",
                           "yaxis.categoryarray": bar_y_labels,
-                          "showlegend": True},
+                          "showlegend": True,
+                          "shapes": divider_shapes,
+                          "annotations": divider_annotations},
                      ]),
                 dict(label="Top controlling constraints by rent ($)",
                      method="update",
@@ -523,7 +596,9 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
                          {"visible": [False, False, False, True]},
                          {"xaxis.title.text": "constraint rent ($) = rating × Σ|μ|",
                           "yaxis.categoryarray": grouped["short_label"].tolist(),
-                          "showlegend": False},
+                          "showlegend": False,
+                          "shapes": divider_shapes_grouped,
+                          "annotations": divider_annotations_grouped},
                      ]),
             ],
         )],

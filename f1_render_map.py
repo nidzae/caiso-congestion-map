@@ -43,9 +43,12 @@ MIN_PIXEL = 7
 MAX_PIXEL = 30
 N_QUINTILES = 5
 SPIKE_PERCENTILE = 0.99
-BAR_TOP_N = None           # None = show every metrics-ready node
-DURATIONS = [2, 4, 8]      # battery durations (hours) for the selector
-DEFAULT_DURATION = 4       # initial view on page load
+# Page-weight + Plotly responsiveness driver. ~2k bars with 3 traces each
+# = >3 MB of bar-chart data + slow hover detection. Cap to top-N to keep
+# the page snappy; users who need the long tail can sort the CSV directly.
+BAR_TOP_N = 300
+DURATIONS = [2, 4, 8]
+DEFAULT_DURATION = 4
 
 ARCHETYPE_CMAP = {
     "WHITE":  ("Greys",   0.15, 0.55),  # cmap, alpha-min, alpha-max
@@ -467,14 +470,17 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     base_colors_d8i = [bar_color_for_d(a, q, 8) for a, q in zip(by_spread["archetype"], by_spread["q_rank_D4"])]
 
     fig = go.Figure()
+    # Inner segments: no hover text — same info would be duplicated and
+    # bloats the page. Hover is on the outermost (D=8 increment) segment
+    # only; it sits on top of the others in stacked mode and covers most
+    # of the bar's clickable area.
     fig.add_trace(go.Bar(
         x=by_spread["spread_D2"].values,
         y=bar_y_labels,
         orientation="h",
         marker=dict(color=base_colors_d2,
                     line=dict(color=edge_color(by_spread), width=edge_width(by_spread))),
-        text=bar_hovertext,
-        hovertemplate="%{text}<extra></extra>",
+        hoverinfo="skip",
         name="D = 2 h (base)",
         visible=True, legendgroup="durations", showlegend=True,
     ))
@@ -484,8 +490,7 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
         orientation="h",
         marker=dict(color=base_colors_d4i,
                     line=dict(color=edge_color(by_spread), width=edge_width(by_spread))),
-        text=bar_hovertext,
-        hovertemplate="%{text}<extra></extra>",
+        hoverinfo="skip",
         name="+ 4 h increment",
         visible=True, legendgroup="durations", showlegend=True,
     ))
@@ -1079,9 +1084,9 @@ hollow marker if  conc > 0.5</code>
       <button class="bvbtn" data-view="constraints">Top constraints by rent</button>
     </div>
     <div class="bar-help">
-      <b>Nodes</b> view: each bar is a <b>stacked composite</b> — D=2h base + 4h increment + 8h increment. Wide outer segments = duration-sensitive. Dark gray outline = unplaced (not on map). Sorted unrelieved on top; orange divider marks where relieved bars begin.
-      &nbsp;·&nbsp;
-      <b>Constraints</b> view: one bar per physical transmission line, ordered by total rent (rating × Σ|μ|).
+      Top {n_bar} of {n_metrics:,} nodes by spread (capped for performance — full table in <code>data/node_metrics.csv</code>).
+      <b>Stacked composite</b>: D=2h base + 4h increment + 8h increment. Hover the outermost segment for details.
+      Sorted unrelieved on top; orange divider marks where TPP-relieved bars begin.
     </div>
   </div>
   {bar_html}

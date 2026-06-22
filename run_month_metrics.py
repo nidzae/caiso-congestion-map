@@ -68,4 +68,10 @@ if __name__ == "__main__":
     rc = run(["g2_duration_sweep.py", tag])
     if rc != 0: sys.exit(rc)
     ensure_coords_symlink(tag)
+    # Always-on rebuild of the cross-month TPP crosswalk so the latest
+    # tag's k* coverage is included. compute_persistence is cross-month
+    # too — only rerun once after the LAST month's metrics finish.
+    rc = run(["tpp_crosswalk.py"])
+    if rc != 0:
+        log("  (tpp_crosswalk failed but continuing)")
     log(f"=== {tag} metrics complete ===")

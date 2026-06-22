@@ -123,8 +123,36 @@ extras = [c for c in agg.columns if c not in keep and c in ("MCC_mid","MCC_eve",
             "archetype","kstar_physical_line","kstar_rating_MW",
             "kstar_rating_source","hours_covered","kstar_contribution")]
 final_cols = list(dict.fromkeys(keep + extras))
-agg[final_cols].to_csv(out_metrics)
-print(f"saved {out_metrics}  ({len(agg)} nodes, {len(final_cols)} cols)")
+agg_out = agg[final_cols].copy()
+
+# Join in per-node persistence + per-line TPP overlay BEFORE writing.
+persist_path = DATA / "persistence_2025.csv"
+if persist_path.exists():
+    p = pd.read_csv(persist_path, index_col=0)
+    keep_persist = [c for c in ["n_months_active", "size_cv",
+                                  "size_max_share", "same_kstar_months",
+                                  "persistence_label"] if c in p.columns]
+    agg_out = agg_out.join(p[keep_persist], how="left")
+    print(f"joined {len(keep_persist)} persistence columns from {persist_path.name}")
+
+tpp_path = DATA / "tpp_crosswalk.csv"
+if tpp_path.exists():
+    tpp = pd.read_csv(tpp_path).set_index("physical_line")
+    tpp = tpp[["n_tpp_projects", "earliest_isd_active",
+                "oldest_plan_year", "max_slip_years",
+                "projects_summary"]]
+    # Join on the controlling-line key
+    if "kstar_physical_line" in agg_out.columns:
+        joined = agg_out.merge(tpp, how="left",
+                                 left_on="kstar_physical_line",
+                                 right_index=True)
+        # Preserve original index (was lost by merge)
+        joined.index = agg_out.index
+        agg_out = joined
+        print(f"joined TPP columns from {tpp_path.name}")
+
+agg_out.to_csv(out_metrics)
+print(f"saved {out_metrics}  ({len(agg_out)} nodes, {len(agg_out.columns)} cols)")
 
 # Duration-sweep aggregate
 sweep_agg = pd.DataFrame(index=g_s.size().index)

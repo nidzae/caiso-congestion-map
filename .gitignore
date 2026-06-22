@@ -24,3 +24,4 @@ data/*.log
 # Downloaded source data — pull again from the upstream URLs.
 data/eia/
 data/wecc/
+data/tpp/

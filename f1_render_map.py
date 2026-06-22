@@ -33,7 +33,7 @@ def ceil_int(x):
     return int(math.ceil(x))
 
 DATA_DIR = Path("data")
-SEASON_TAG = "summer2025"
+SEASON_TAG = "2025-full"  # default to the Full Year aggregate
 # CLI: python3 f1_render_map.py [SEASON_TAG]
 if len(sys.argv) >= 2 and not sys.argv[1].startswith("-"):
     SEASON_TAG = sys.argv[1]
@@ -216,8 +216,17 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     Includes unplaced nodes in view (1).
     """
     # ----- View 1: every metrics-ready node, one composite bar each -----
-    by_spread = metrics_df.sort_values(f"spread_D{DEFAULT_DURATION}",
-                                         ascending=False).copy()
+    # Sort PRIMARILY by "no TPP relief planned" first (developer wants the
+    # biggest unfunded prizes on top), then by D=4 spread descending.
+    has_relief = metrics_df.get("has_tpp_relief",
+                                  pd.Series(False, index=metrics_df.index))
+    by_spread = (metrics_df
+                  .assign(_has_relief=has_relief.fillna(False).astype(int))
+                  .sort_values(
+                      ["_has_relief", f"spread_D{DEFAULT_DURATION}"],
+                      ascending=[True, False])
+                  .drop(columns=["_has_relief"])
+                  .copy())
     if BAR_TOP_N is not None:
         by_spread = by_spread.head(BAR_TOP_N)
 
@@ -270,21 +279,30 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
 
     # ----- View 2: constraints aggregated by total rent -----
     has_constraint = metrics_df.dropna(subset=["kstar_physical_line", "size_node"])
-    grouped = (has_constraint
-        .groupby("kstar_physical_line")
-        .agg(
-            size=("size_node", "first"),             # identical within group
-            rating=("kstar_rating_MW", "first"),
-            rating_source=("kstar_rating_source", "first"),
-            n_nodes=("size_node", "size"),
-            avg_spread=("spread", "mean"),
-            max_spread=("spread", "max"),
-            archetype_mode=("archetype", lambda s: s.value_counts().idxmax()),
-            example_nodes=("size_node", lambda s: ", ".join(s.index.astype(str)[:5])),
-        )
-        .sort_values("size", ascending=False)
-        .copy()
+    agg_dict = dict(
+        size=("size_node", "first"),
+        rating=("kstar_rating_MW", "first"),
+        rating_source=("kstar_rating_source", "first"),
+        n_nodes=("size_node", "size"),
+        avg_spread=("spread", "mean"),
+        max_spread=("spread", "max"),
+        archetype_mode=("archetype", lambda s: s.value_counts().idxmax()),
+        example_nodes=("size_node", lambda s: ", ".join(s.index.astype(str)[:5])),
     )
+    # Carry TPP fields through (first(); they're constant per controlling line)
+    for c in ("n_tpp_projects", "earliest_isd_active",
+                "oldest_plan_year", "max_slip_years", "projects_summary"):
+        if c in has_constraint.columns:
+            agg_dict[c] = (c, "first")
+    grouped = has_constraint.groupby("kstar_physical_line").agg(**agg_dict).copy()
+    # Split: unrelieved constraints on top, then relieved.
+    if "n_tpp_projects" in grouped.columns:
+        grouped["_has_relief"] = (grouped["n_tpp_projects"].fillna(0) > 0).astype(int)
+        grouped = (grouped.sort_values(["_has_relief", "size"],
+                                         ascending=[True, False])
+                          .drop(columns=["_has_relief"]))
+    else:
+        grouped = grouped.sort_values("size", ascending=False)
     if BAR_TOP_N is not None:
         grouped = grouped.head(BAR_TOP_N)
 
@@ -304,6 +322,21 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             rating = r["rating"]
             rating_str = (f"{rating:.0f} MW" if pd.notna(rating) and rating > 0
                           else "(unknown)")
+            # TPP block
+            n_tpp = int(r.get("n_tpp_projects") or 0)
+            if n_tpp == 0:
+                tpp_block = "❌ no approved project — rent likely to persist"
+            else:
+                head = [f"{n_tpp} project{'s' if n_tpp != 1 else ''}"]
+                ei = r.get("earliest_isd_active")
+                ms = r.get("max_slip_years")
+                if isinstance(ei, (int, float)) and not pd.isna(ei):
+                    head.append(f"earliest ISD {int(ei)}")
+                if isinstance(ms, (int, float)) and not pd.isna(ms) and ms > 0:
+                    head.append(f"max slip {int(ms)} yr")
+                summary = r.get("projects_summary") or ""
+                short = summary[:220] + ("…" if len(summary) > 220 else "")
+                tpp_block = " — ".join(head) + "<br>&nbsp;&nbsp;&nbsp;" + short
             out.append(
                 f"<b>{line}</b><br>"
                 f"<b>Size (rent):</b> ${r['size']:,.0f}<br>"
@@ -311,6 +344,7 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
                 f"<b>Nodes attributed:</b> {r['n_nodes']}<br>"
                 f"<b>Dominant archetype:</b> {ARCHETYPE_LABEL.get(r['archetype_mode'], r['archetype_mode'])}<br>"
                 f"<b>Node spread:</b> mean ${ceil_int(r['avg_spread']):,d}, max ${ceil_int(r['max_spread']):,d}<br>"
+                f"<b>TPP relief:</b> {tpp_block}<br>"
                 f"<b>Example nodes:</b> {r['example_nodes']}"
             )
         return out
@@ -324,6 +358,30 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     # segments = persistent (longer batteries unlock more value).
     seg_inc_d4 = (by_spread["spread_D4"] - by_spread["spread_D2"]).clip(lower=0)
     seg_inc_d8 = (by_spread["spread_D8"] - by_spread["spread_D4"]).clip(lower=0)
+
+    def _persistence_for_hover(r):
+        lbl = r.get("persistence_label")
+        if not isinstance(lbl, str):
+            return "n/a"
+        cv = r.get("size_cv")
+        if isinstance(cv, (int, float)) and not pd.isna(cv):
+            return f"{lbl}  (CV {cv:.2f})"
+        return lbl
+
+    def _tpp_for_hover(r):
+        n = int(r.get("n_tpp_projects") or 0)
+        if n == 0:
+            return "❌ no approved project targets this constraint — rent likely to persist"
+        summary = r.get("projects_summary") or ""
+        earliest = r.get("earliest_isd_active")
+        slip = r.get("max_slip_years")
+        head_bits = [f"{n} project{'s' if n != 1 else ''}"]
+        if isinstance(earliest, (int, float)) and not pd.isna(earliest):
+            head_bits.append(f"earliest ISD {int(earliest)}")
+        if isinstance(slip, (int, float)) and not pd.isna(slip) and slip > 0:
+            head_bits.append(f"max slip {int(slip)} yr")
+        short = summary[:220] + ("…" if len(summary) > 220 else "")
+        return " — ".join(head_bits) + "<br>&nbsp;&nbsp;&nbsp;" + short
 
     def make_bar_hovertext(d: pd.DataFrame) -> list:
         """One hover entry per node — same text for every segment, so hovering
@@ -348,12 +406,26 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
                 f"<b>Controlling line:</b> {r.get('kstar_physical_line','(unknown)')}<br>"
                 f"<b>Rating:</b> {rating_str} ({r.get('kstar_rating_source','-')})<br>"
                 f"<b>Concentration:</b> {r['conc']:.3f}  ·  <b>Marker:</b> {r['marker']}<br>"
+                f"<b>Rent persistence:</b> {_persistence_for_hover(r)}<br>"
+                f"<b>TPP relief:</b> {_tpp_for_hover(r)}<br>"
                 f"<b>EIA plant:</b> {plant}<br>"
                 f"<b>Coordinates:</b> {loc}"
             )
         return out
 
     bar_hovertext = make_bar_hovertext(by_spread)
+
+    # Per-bar y-axis label suffix: append persistence summary + relief flag
+    # so the user can scan without hovering. Format keeps node ID first
+    # (still searchable / Ctrl-F friendly).
+    def _bar_label(node, row):
+        lbl = row.get("persistence_label") or ""
+        relief = " ▽" if row.get("has_tpp_relief") else ""
+        if lbl:
+            return f"{node}  [{lbl}]{relief}"
+        return f"{node}{relief}"
+
+    bar_y_labels = [_bar_label(n, r) for n, r in by_spread.iterrows()]
 
     # Use archetype quintile colors at the D=4 quintile (visually consistent
     # with the map's default), with progressively stronger alpha per segment.
@@ -364,7 +436,7 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=by_spread["spread_D2"].values,
-        y=by_spread.index.astype(str).tolist(),
+        y=bar_y_labels,
         orientation="h",
         marker=dict(color=base_colors_d2,
                     line=dict(color=edge_color(by_spread), width=edge_width(by_spread))),
@@ -375,7 +447,7 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     ))
     fig.add_trace(go.Bar(
         x=seg_inc_d4.values,
-        y=by_spread.index.astype(str).tolist(),
+        y=bar_y_labels,
         orientation="h",
         marker=dict(color=base_colors_d4i,
                     line=dict(color=edge_color(by_spread), width=edge_width(by_spread))),
@@ -386,7 +458,7 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     ))
     fig.add_trace(go.Bar(
         x=seg_inc_d8.values,
-        y=by_spread.index.astype(str).tolist(),
+        y=bar_y_labels,
         orientation="h",
         marker=dict(color=base_colors_d8i,
                     line=dict(color=edge_color(by_spread), width=edge_width(by_spread))),
@@ -427,7 +499,7 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             autorange="reversed",
             tickfont=dict(size=10),
             categoryorder="array",
-            categoryarray=by_spread.index.astype(str).tolist(),
+            categoryarray=bar_y_labels,
         ),
         xaxis=dict(title="spread ($/MWh) — stacked: D=2 base + 4h increment + 8h increment",
                     gridcolor="#eee"),
@@ -442,7 +514,7 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
                      args=[
                          {"visible": [True, True, True, False]},
                          {"xaxis.title.text": "spread ($/MWh) — stacked: D=2 base + 4h increment + 8h increment",
-                          "yaxis.categoryarray": by_spread.index.astype(str).tolist(),
+                          "yaxis.categoryarray": bar_y_labels,
                           "showlegend": True},
                      ]),
                 dict(label="Top controlling constraints by rent ($)",
@@ -482,6 +554,8 @@ def build_page(map_html: str, bar_html: str,
                n_rendered: int, n_total: int, n_bar: int, n_metrics: int,
                quintile_bounds: dict, trace_colors_by_d: dict,
                arch_trace_indices: dict | None = None,
+               trace_opacity_normal: list | None = None,
+               trace_opacity_hide: list | None = None,
                month_nav_html: str = "", current_tag: str = "") -> str:
     """Wrap the Plotly figure in an HTML shell with a corner legend and a
     slide-in README panel."""
@@ -526,6 +600,9 @@ def build_page(map_html: str, bar_html: str,
     duration_colors_json = json.dumps({str(D): trace_colors_by_d[D] for D in DURATIONS})
     # Per-archetype trace indices — for click-to-toggle visibility in the legend
     arch_traces_json = json.dumps(arch_trace_indices or {})
+    # Per-trace opacity arrays for the TPP "hide-relief" toggle
+    opacity_normal_json = json.dumps(trace_opacity_normal or [])
+    opacity_hide_json = json.dumps(trace_opacity_hide or [])
 
     return f"""<!doctype html>
 <html lang="en">
@@ -623,6 +700,19 @@ def build_page(map_html: str, bar_html: str,
   #duration-picker .dbtn.active {{ background:#2a6ab8; color:#fff;
                                     border-color:#2a6ab8; font-weight:600; }}
   #duration-picker .hint {{ font-size:10.5px; color:#777; margin-left:4px; }}
+  /* TPP-relief toggle button — same row as the duration picker, separated. */
+  #relief-toggle {{ position:absolute; left:14px; top:97px; z-index:8;
+                     background:rgba(255,255,255,0.95); border:1px solid #aaa;
+                     border-radius:6px; padding:6px 10px; font-size:12px;
+                     box-shadow:0 1px 4px rgba(0,0,0,0.12);
+                     display:flex; align-items:center; gap:8px; }}
+  #relief-toggle button {{ font-size:12px; padding:4px 12px; border:1px solid #aaa;
+                            background:#fff; cursor:pointer; border-radius:4px;
+                            transition:background 0.1s, color 0.1s; }}
+  #relief-toggle button.on {{ background:#b8552a; color:#fff;
+                                border-color:#b8552a; font-weight:600; }}
+  #relief-toggle button:hover:not(.on) {{ background:#f0f0f0; }}
+  #relief-toggle .hint {{ font-size:10.5px; color:#777; }}
 
   /* Compact legend, lower-left */
   #legend {{ position:absolute; left:14px; bottom:14px; background:rgba(255,255,255,0.94);
@@ -900,6 +990,10 @@ hollow marker if  conc > 0.5</code>
     <button class="dbtn{active_class[8]}" data-d="8">8 h</button>
     <span class="hint">— color/saturation uses the selected D's spread quintile</span>
   </div>
+  <div id="relief-toggle">
+    <button id="hide-relief-btn">Hide nodes with TPP relief</button>
+    <span class="hint">— click to show only constraints with no approved transmission project</span>
+  </div>
   {map_html}
 </div>
 
@@ -956,6 +1050,24 @@ hollow marker if  conc > 0.5</code>
         Plotly.restyle(mapDiv, {{ "marker.color": D_COLORS[d] }});
       }}
     }});
+  }});
+
+  // Hide-relief toggle (TPP overlay): sets marker.opacity per-trace via Plotly.restyle
+  const OPACITY_NORMAL = {opacity_normal_json};
+  const OPACITY_HIDE   = {opacity_hide_json};
+  const reliefBtn = document.getElementById("hide-relief-btn");
+  reliefBtn.addEventListener("click", () => {{
+    const turnOn = !reliefBtn.classList.contains("on");
+    reliefBtn.classList.toggle("on", turnOn);
+    reliefBtn.textContent = turnOn ? "Show all nodes" : "Hide nodes with TPP relief";
+    const mapDiv = document.getElementById("map");
+    if (window.Plotly && mapDiv) {{
+      const arrs = turnOn ? OPACITY_HIDE : OPACITY_NORMAL;
+      // Plotly expects an array of arrays for per-marker opacity, indexed by trace.
+      // Build the trace-index list explicitly (0..n-1).
+      const traceIdx = arrs.map((_, i) => i);
+      Plotly.restyle(mapDiv, {{ "marker.opacity": arrs }}, traceIdx);
+    }}
   }});
 
   // Click-to-toggle archetype visibility on the map.
@@ -1041,6 +1153,33 @@ def main():
         # small float diffs OK — but the base 'spread' from D4 should align
         max_diff = (df_metrics[f"spread_D{DEFAULT_DURATION}"] - df_metrics["spread"]).abs().max()
         print(f"NOTE: base spread vs D=4 spread max diff: {max_diff:.4f}")
+
+    # --- Join per-node rent persistence (computed once, valid for every month) ---
+    persist_path = DATA_DIR / "persistence_2025.csv"
+    if persist_path.exists() and "persistence_label" not in df_metrics.columns:
+        p = pd.read_csv(persist_path, index_col=0)
+        df_metrics = df_metrics.join(
+            p[["n_months_active", "size_cv", "persistence_label"]], how="left")
+
+    # --- Join per-line TPP overlay on the controlling line ---
+    tpp_path = DATA_DIR / "tpp_crosswalk.csv"
+    if tpp_path.exists() and "n_tpp_projects" not in df_metrics.columns:
+        tpp = pd.read_csv(tpp_path).set_index("physical_line")
+        tpp = tpp[["n_tpp_projects", "earliest_isd_active",
+                    "oldest_plan_year", "max_slip_years",
+                    "projects_summary"]]
+        # merge on the controlling-line column
+        if "kstar_physical_line" in df_metrics.columns:
+            merged = df_metrics.merge(
+                tpp, how="left",
+                left_on="kstar_physical_line", right_index=True)
+            merged.index = df_metrics.index
+            df_metrics = merged
+        df_metrics["n_tpp_projects"] = df_metrics["n_tpp_projects"].fillna(0).astype(int)
+    # Boolean flag — used for the map "hide constraints with relief" toggle
+    # and for the bar chart's split sort.
+    df_metrics["has_tpp_relief"] = df_metrics.get(
+        "n_tpp_projects", pd.Series(0, index=df_metrics.index)) > 0
 
     def node_color(arch: str, q: int) -> str:
         cmap_name, alpha_lo, alpha_hi = ARCHETYPE_CMAP[arch]
@@ -1138,6 +1277,8 @@ def main():
         "<b>Controlling line:</b> %{customdata[5]}<br>"
         "<b>Rating:</b> %{customdata[6]} MW (%{customdata[7]})<br>"
         "<b>Concentration:</b> %{customdata[8]:.3f}  ·  <b>Marker:</b> %{customdata[9]}<br>"
+        "<b>Rent persistence:</b> %{customdata[13]}<br>"
+        "<b>TPP relief:</b> %{customdata[14]}<br>"
         "<b>EIA plant:</b> %{customdata[10]}<br>"
         "<b>Coordinates:</b> %{lat:.4f}, %{lon:.4f}"
         "<extra></extra>"
@@ -1151,6 +1292,12 @@ def main():
     # array). We treat the hollow-inner white traces as belonging to their
     # archetype too so they hide together.
     arch_trace_indices: dict[str, list[int]] = {a: [] for a in order}
+    # For the "hide constraints with TPP relief" toggle: per-trace,
+    # per-marker opacity arrays. opacity_normal = 1.0 everywhere;
+    # opacity_hide_relief = 0.0 for markers whose k* has a TPP project,
+    # 1.0 otherwise. Restyle marker.opacity with one of the two.
+    trace_opacity_normal: list = []
+    trace_opacity_hide: list = []
     trace_idx = 0
 
     for arch in order:
@@ -1161,7 +1308,39 @@ def main():
         # 0: node, 1: archetype-descriptor, 2: spread_D4 (default), 3: q_rank_D4,
         # 4: size, 5: controlling line, 6: rating, 7: rating source,
         # 8: conc, 9: marker, 10: EIA plant,
-        # 11: spread_D2, 12: spread_D8
+        # 11: spread_D2, 12: spread_D8,
+        # 13: persistence label (e.g. "12/12 mo · variable"),
+        # 14: TPP relief summary string ("❌ no approved project…" or
+        #     "1 project: Antelope-Whirlwind Line Upgrade (plan 2022-23, ISD '25)")
+        def persistence_str(row):
+            lbl = row.get("persistence_label")
+            if isinstance(lbl, str):
+                cv = row.get("size_cv")
+                if isinstance(cv, (int, float)) and not pd.isna(cv):
+                    return f"{lbl}  (CV {cv:.2f})"
+                return lbl
+            return "n/a"
+
+        def tpp_str(row):
+            n = int(row.get("n_tpp_projects") or 0)
+            if n == 0:
+                return "❌ no approved project targets this constraint — rent likely to persist"
+            summary = row.get("projects_summary") or ""
+            earliest = row.get("earliest_isd_active")
+            slip = row.get("max_slip_years")
+            head_bits = [f"{n} project{'s' if n != 1 else ''}"]
+            if isinstance(earliest, (int, float)) and not pd.isna(earliest):
+                head_bits.append(f"earliest ISD {int(earliest)}")
+            if isinstance(slip, (int, float)) and not pd.isna(slip) and slip > 0:
+                head_bits.append(f"max slip {int(slip)} yr")
+            head = " — ".join(head_bits)
+            # truncate the summary so the tooltip stays readable
+            short = summary[:220] + ("…" if len(summary) > 220 else "")
+            return f"{head}<br>&nbsp;&nbsp;&nbsp;{short}"
+
+        persistence_arr = [persistence_str(r) for _, r in sub.iterrows()]
+        tpp_arr = [tpp_str(r) for _, r in sub.iterrows()]
+
         cd = np.column_stack([
             sub.index.astype(str).values,
             sub["archetype"].map(ARCHETYPE_LABEL).values,
@@ -1176,6 +1355,8 @@ def main():
             sub["Plant Name"].fillna("(unmatched)").values,
             np.ceil(sub["spread_D2"]).astype(int).values,
             np.ceil(sub["spread_D8"]).astype(int).values,
+            persistence_arr,
+            tpp_arr,
         ])
         # Filled trace
         filled = sub[sub["marker"] == "filled"]
@@ -1198,6 +1379,12 @@ def main():
             for D in DURATIONS:
                 trace_colors_by_d[D].append(filled[f"color_D{D}"].tolist())
             arch_trace_indices[arch].append(trace_idx)
+            n = len(filled)
+            trace_opacity_normal.append([1.0] * n)
+            relief_flags = filled.get("has_tpp_relief",
+                                       pd.Series(False, index=filled.index))
+            trace_opacity_hide.append(
+                [0.0 if bool(v) else 1.0 for v in relief_flags.fillna(False)])
             trace_idx += 1
 
         if not hollow.empty:
@@ -1216,6 +1403,12 @@ def main():
             for D in DURATIONS:
                 trace_colors_by_d[D].append(hollow[f"color_D{D}"].tolist())
             arch_trace_indices[arch].append(trace_idx)
+            n_h = len(hollow)
+            trace_opacity_normal.append([1.0] * n_h)
+            relief_flags_h = hollow.get("has_tpp_relief",
+                                          pd.Series(False, index=hollow.index))
+            relief_h_list = [0.0 if bool(v) else 1.0 for v in relief_flags_h.fillna(False)]
+            trace_opacity_hide.append(relief_h_list)
             trace_idx += 1
             fig.add_trace(go.Scattermap(
                 lat=hollow["Latitude"],
@@ -1229,6 +1422,8 @@ def main():
             for D in DURATIONS:
                 trace_colors_by_d[D].append("white")
             arch_trace_indices[arch].append(trace_idx)
+            trace_opacity_normal.append([1.0] * n_h)
+            trace_opacity_hide.append(relief_h_list)  # same nodes -> hide the inner white too
             trace_idx += 1
 
     # Center the view on California.
@@ -1281,6 +1476,8 @@ def main():
                        quintile_bounds=quintile_bounds,
                        trace_colors_by_d=trace_colors_by_d,
                        arch_trace_indices=arch_trace_indices,
+                       trace_opacity_normal=trace_opacity_normal,
+                       trace_opacity_hide=trace_opacity_hide,
                        month_nav_html=month_nav,
                        current_tag=SEASON_TAG)
     out_html.write_text(page)

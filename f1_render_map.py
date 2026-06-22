@@ -513,11 +513,13 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
         visible=False, showlegend=False,
     ))
 
-    # Bar height shrinks as N grows so the page stays usable. Top-100 ≈ 18px,
-    # 2k+ nodes ≈ 6px each.
+    # Bar height. Min 12 px so individual bars stay perceptually distinct
+    # even with 2k+ nodes (was 6 px — too thin, looked like a blob from far
+    # away and led to "blank screen" feedback). Trades total chart height
+    # for legibility; ~2200 × 12 = 26k px, scrollable.
     n_bars_view1 = len(by_spread)
-    per_bar_px = max(6, min(18, int(2000 / max(1, n_bars_view1))))
-    fig_height = max(700, per_bar_px * n_bars_view1 + 120)
+    per_bar_px = max(12, min(20, int(2000 / max(1, n_bars_view1))))
+    fig_height = max(700, per_bar_px * n_bars_view1 + 80)
 
     # Find the boundary where unrelieved nodes end and relieved begin
     # (default sort puts unrelieved on top, then relieved).
@@ -561,10 +563,14 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
         shapes=divider_shapes,
         annotations=divider_annotations,
         showlegend=True,
-        legend=dict(orientation="h", yanchor="top", y=1.06,
+        # Legend overlays inside the plot, top-right corner, semi-transparent —
+        # frees the top margin so the first bars start near the top of the chart.
+        legend=dict(orientation="h", yanchor="top", y=1.0,
                     xanchor="right", x=1.0,
-                    title=dict(text="Composite bar segments:")),
-        margin=dict(l=320, r=20, t=90, b=50),
+                    bgcolor="rgba(255,255,255,0.85)",
+                    bordercolor="#ddd", borderwidth=1,
+                    title=dict(text="Composite segments:")),
+        margin=dict(l=320, r=20, t=50, b=40),
         height=fig_height,
         yaxis=dict(
             autorange="reversed",
@@ -1174,6 +1180,12 @@ hollow marker if  conc > 0.5</code>
     if (window.Plotly) {{
       const el = document.getElementById(figId);
       if (el) Plotly.Plots.resize(el);
+    }}
+    // When entering the bar tab, scroll the container to the top so the
+    // first bar is immediately visible (no "blank screen, scroll to find").
+    if (viewName === "bar") {{
+      const container = document.getElementById("view-bar");
+      if (container) container.scrollTop = 0;
     }}
   }}
   tabs.forEach(t => t.addEventListener("click", () => {{

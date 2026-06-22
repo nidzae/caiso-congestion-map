@@ -361,7 +361,7 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             # TPP block
             n_tpp = int(r.get("n_tpp_projects") or 0)
             if n_tpp == 0:
-                tpp_block = "❌ no approved project — rent likely to persist"
+                tpp_block = "⚠️ no match in our (partial) TPP data — see note below"
             else:
                 head = [f"{n_tpp} project{'s' if n_tpp != 1 else ''}"]
                 ei = r.get("earliest_isd_active")
@@ -407,7 +407,7 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     def _tpp_for_hover(r):
         n = int(r.get("n_tpp_projects") or 0)
         if n == 0:
-            return "❌ no approved project targets this constraint — rent likely to persist"
+            return "⚠️ no match in our (partial) TPP data — could be a coverage gap, not absence of relief"
         summary = r.get("projects_summary") or ""
         earliest = r.get("earliest_isd_active")
         slip = r.get("max_slip_years")
@@ -1051,6 +1051,39 @@ hollow marker if  conc > 0.5</code>
        bus suffixes (<code>_B1</code> vs <code>_B2</code>) usually indicate
        which bus is which.</p>
 
+    <h2>⚠ TPP relief data is incomplete</h2>
+    <p>The hover field <b>TPP relief</b> joins each node's controlling
+       transmission line against the CAISO Transmission Planning Process
+       project list. Two important caveats:</p>
+    <ul>
+      <li><b>Our TPP file is not the full CAISO list.</b> The single
+          machine-readable attachment we pull
+          (<a href="https://www.caiso.com/documents/attachment-1-approved-projects-transmission-planning-process-oct-2025.pdf" target="_blank" rel="noopener">attachment 1, Oct 2025</a>)
+          is <b>SCE territory only</b>. PG&amp;E projects (which control
+          Path 15 = Los Banos-Panoche and most NorCal corridors), SDG&amp;E,
+          VEA, and TANC projects live in different attachments and chapters
+          of the 700+ page main Transmission Plan that aren't easily
+          machine-readable. We've hand-added the two PG&amp;E projects named
+          in Appendix I (Manning–Metcalf 500 kV and NRS–San Jose B 230 kV)
+          but the bulk of PG&amp;E work is missing.</li>
+      <li><b>We don't do power-flow.</b> The crosswalk matches a project to
+          a constraint only when the project name contains the constraint's
+          substation pair (or a WECC-named-path bridge). A new 500 kV
+          backbone elsewhere can relieve adjacent 115/230 kV constraints via
+          network effects that only a PTDF-based simulation would catch —
+          those are invisible to us.</li>
+      <li><b>Unplaced nodes are no different.</b> The TPP join is on the
+          controlling-line key, not coordinates, so unplaced nodes get the
+          same join as placed ones. Both inherit the same incomplete-TPP
+          limitation above.</li>
+    </ul>
+    <p><b>Net interpretation:</b> when the hover says
+       <code>⚠️ no match in our (partial) TPP data</code>, treat it as
+       "we couldn't find one in our limited data" rather than "no project
+       exists". Confirm against the
+       <a href="https://www.caiso.com/generation-transmission/transmission/transmission-planning" target="_blank" rel="noopener">full CAISO Transmission Plan</a>
+       before acting on the absence of relief.</p>
+
     <h2>Other limitations</h2>
     <ul>
       <li>This is a <b>screening tool</b>. Map says "MCC pattern here suggests congestion." It does <i>not</i> confirm a battery sited there can actually relieve the constraint — that needs a network-model run with PTDFs.</li>
@@ -1451,7 +1484,7 @@ def main():
         def tpp_str(row):
             n = int(row.get("n_tpp_projects") or 0)
             if n == 0:
-                return "❌ no approved project targets this constraint — rent likely to persist"
+                return "⚠️ no match in our (partial) TPP data — could be a coverage gap, not absence of relief"
             summary = row.get("projects_summary") or ""
             earliest = row.get("earliest_isd_active")
             slip = row.get("max_slip_years")

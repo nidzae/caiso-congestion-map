@@ -221,13 +221,50 @@ def parse_pdf(pdf_path: Path) -> pd.DataFrame:
     return df
 
 
+def supplement_with_other_pto():
+    """The 'attachment-1-approved-projects' PDF is SCE-only. Other PTOs
+    publish their projects in different formats (Appendix I narrative for
+    competitive solicitations, scattered chapters of the main Transmission
+    Plan for the rest). Until we have a machine-readable cross-PTO list,
+    hand-add the high-profile PG&E projects we know about from Appendix I."""
+    extras = [
+        dict(
+            project_name="Manning–Metcalf 500 kV Line",
+            pto="PG&E (competitive)",
+            plan_year_approved="2024-2025",
+            original_isd="2032",
+            latest_isd="2032",
+            original_year=2032, latest_year=2032, years_slipped=0,
+            status="Approved",
+            sub1="Manning", sub2="Metcalf", voltage_kV=500,
+            notes="Reliability-driven; ~100-mile 500 kV AC line, eligible for "
+                  "competitive solicitation, per 2024-2025 ISO Transmission Plan Appendix I.",
+        ),
+        dict(
+            project_name="NRS – San Jose B 230 kV Line",
+            pto="SVP/PG&E (competitive)",
+            plan_year_approved="2024-2025",
+            original_isd="2030",
+            latest_isd="2030",
+            original_year=2030, latest_year=2030, years_slipped=0,
+            status="Approved",
+            sub1="NRS", sub2="San Jose B", voltage_kV=230,
+            notes="Reliability-driven for high load forecast in San Jose area; "
+                  "7-10 mile 230 kV line, est. $150-200M. Per Appendix I.",
+        ),
+    ]
+    return pd.DataFrame(extras)
+
+
 def main():
     if not TPP_PDF.exists():
         raise SystemExit(f"TPP PDF missing: {TPP_PDF}. Run download_tpp.py first.")
     df = parse_pdf(TPP_PDF)
+    extras = supplement_with_other_pto()
+    df = pd.concat([df, extras], ignore_index=True)
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUT_CSV, index=False)
-    print(f"parsed {len(df)} projects -> {OUT_CSV}")
+    print(f"parsed {len(df)} projects (incl. {len(extras)} hand-added non-SCE) -> {OUT_CSV}")
     print()
     print("=== sample (first 6) ===")
     print(df.head(6).to_string())

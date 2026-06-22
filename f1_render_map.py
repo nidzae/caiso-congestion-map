@@ -843,6 +843,13 @@ def build_page(map_html: str, bar_html: str,
        requires a network-model run beyond scope.</p>
 
     <h2>The encoding (four channels)</h2>
+    <p style="font-size:11.5px;color:#666;margin-bottom:8px">
+      Four visual channels per dot. There are also several interactive
+      controls (battery-duration picker, hide-TPP-relief toggle,
+      click-to-toggle archetype, month/full-year nav) and two derived
+      fields in the hover (rent persistence + TPP relief). See
+      <i>Interactive controls</i> and <i>Hover field reference</i> below.
+    </p>
 
     <h3>1. Hue → archetype (flow direction)</h3>
     <ul>
@@ -923,16 +930,45 @@ def build_page(map_html: str, bar_html: str,
 
     <h2>Hover field reference</h2>
     <ul>
-      <li><code>archetype</code> — flow-direction classification (WHITE / BLUE / RED / PURPLE)</li>
-      <li><code>spread</code> — median daily round-trip arbitrage value of MCC, $/MWh. The bigger the spread, the more $$$ a battery sitting there could capture per day.</li>
-      <li><code>(q0–q4)</code> — spread quintile within this archetype (saturation level)</li>
-      <li><code>size</code> — <code>rating × Σ|μ|</code> over the month, in $. Total congestion-rent prize on the wire this node controls.</li>
-      <li><code>controlling line</code> — physical transmission element with largest β·μ contribution from the regression. OASIS nomogram or intertie ID.</li>
-      <li><code>k* rating</code> — MW capacity of that line. Sources: WECC named path catalog (gold), explicit intertie MVA, or voltage-class proxy (69→150, 115→250, 230→700, 500→2500).</li>
-      <li><code>conc</code> — share of total |MCC| value contained in the top 1% of 5-min intervals. High conc → spike-driven (hollow).</li>
-      <li><code>marker</code> — filled / hollow per <code>conc</code>.</li>
-      <li><code>EIA plant</code> — fuzzy-matched generator name from EIA-860 used for coordinates. Some long-tail matches are approximate.</li>
-      <li><code>lat,lon</code> — matched plant coordinates.</li>
+      <li><code>Archetype</code> — flow-direction classification (no local congestion / import pocket / export pocket / bidirectional). See §1 of the encoding.</li>
+      <li><code>Spread (per MWh)</code> — three values: round-trip arbitrage at D=2h, D=4h, and D=8h battery durations. The active D (selected via the duration picker) drives the dot's color saturation.</li>
+      <li><code>Size</code> — <code>rating × Σ|μ|</code> over the period (month or full year), in $. Total congestion-rent prize on the controlling transmission line.</li>
+      <li><code>Controlling line</code> — physical transmission element with the largest <code>|β·μ|</code> contribution from the Ridge regression. OASIS nomogram ID or intertie ID.</li>
+      <li><code>Rating</code> — MW capacity of that line. Source: WECC named-path catalog (most reliable), explicit intertie MVA, or voltage-class proxy (69→150, 115→250, 230→700, 500→2500). Tagged in hover.</li>
+      <li><code>Concentration</code> — share of total |MCC| value contained in the top 1% of 5-min intervals. High value → spike-driven.</li>
+      <li><code>Marker</code> — filled (concentration ≤ 0.5, persistent) or hollow ring (concentration &gt; 0.5, spike-driven).</li>
+      <li><b><code>Rent persistence</code></b> — how reliable this node's rent is across the 12-month dataset. Format: <code>N/12 mo · &lt;label&gt; (CV X.XX)</code> where the label is plain English (<b>stable</b> &lt;0.5, <b>moderate</b> 0.5-1.0, <b>variable</b> 1.0-2.0, <b>volatile</b> &gt;2.0; <b>sporadic</b> if active in ≤4 months; <b>single month</b> if 1). CV = coefficient of variation = month-to-month std/mean.</li>
+      <li><b><code>TPP relief</code></b> — whether CAISO's Transmission Planning Process has any approved project targeting this node's controlling line. When matched: project name + original ISD → current ISD + slip years + status. When not matched: <code>⚠️ no match in our (partial) TPP data</code> — see TPP-coverage caveat below.</li>
+      <li><code>EIA plant</code> — fuzzy-matched plant name from EIA-860 used for coordinates. Some long-tail matches are approximate (see fuzzy-match note).</li>
+      <li><code>Coordinates</code> — matched plant lat/lon.</li>
+    </ul>
+
+    <h2>Interactive controls</h2>
+    <ul>
+      <li><b>Battery duration picker (2 h / 4 h / 8 h)</b> — top-left of the map. Recolors every dot's saturation using the spread quintile at the selected D. Same node, different intensity — read the bar-chart composite to see how much the rent grows with longer storage.</li>
+      <li><b>Hide nodes with TPP relief toggle</b> — second row, top-left of the map. Click once → dots whose controlling line has any approved TPP project go transparent. What remains is the set of "biggest unfunded prizes." Click again → restored.</li>
+      <li><b>Click any color row in the bottom-left legend</b> to hide/show that archetype on the map (e.g., click "import pocket" to hide all blue dots).</li>
+      <li><b>Tab choice persists across months</b> — if you switch from the map to the ranked bar chart and then click a different month, you stay on the bar chart for that month (state lives in the URL hash).</li>
+      <li><b>Full Year view</b> — the leftmost button in the month-nav (<code>Full year</code>). Aggregates per-month metrics into an annual view (median spread/size, mean MCC re-classified into archetype, mode controlling line, mean concentration). Use as a "typical year" baseline; drill into specific months for seasonal stories.</li>
+    </ul>
+
+    <h2>Reading the ranked bar chart (📊 tab)</h2>
+    <p>Two views, toggled via the buttons in the chart's toolbar.</p>
+    <h3>Nodes view (default)</h3>
+    <ul>
+      <li>One row per node; each row is a <b>stacked composite</b> of three colored segments — D=2h base spread (innermost / faintest) + 4h increment (middle) + 8h increment (outermost / most saturated). Total bar length = D=8h spread.</li>
+      <li>Wide outer segments = duration-sensitive node (longer storage unlocks meaningful extra revenue). Bar dominated by the inner segment = spike-driven (short battery captures most of the value).</li>
+      <li>Hover anywhere on the bar to see the full sweep + all node metadata. (For performance, only the outermost segment carries the hover handler — but it overlays the others so you can still hover anywhere on the visible bar.)</li>
+      <li>Y-axis label format: <code>NODE_ID  [N/12 mo · &lt;persistence&gt;] ▽</code> — the bracket carries the persistence label so you can scan at a glance, and the <code>▽</code> suffix indicates "TPP relief planned for this node's controlling line."</li>
+      <li><b>Default sort</b>: unrelieved nodes on top (no TPP project found), relieved nodes below — both sorted by spread descending within their group. A <b>dashed orange divider line</b> + label marks the boundary, so the biggest unfunded prizes are always at the top.</li>
+      <li>Bars with a <b>dark gray outline</b> are "unplaced" — they have valid metrics but no EIA-860 coordinate match, so they don't appear on the map. They're still ranked here.</li>
+      <li>For performance, the chart caps at the top 300 nodes by spread. The full ~2000-row table is in <code>data/node_metrics.csv</code>.</li>
+    </ul>
+    <h3>Constraints view</h3>
+    <ul>
+      <li>One bar per distinct controlling transmission line, sorted by total annual rent (<code>rating × Σ|μ|</code>). Same unrelieved-on-top split with the orange divider.</li>
+      <li>Hover shows the line's MW rating, # of nodes attributed to it, dominant archetype across those nodes, mean/max node spread, and the full TPP-project list (if any).</li>
+      <li>This is the natural granularity for the "biggest prize" question — many nodes share a controlling line, so per-node sort by size produces lots of identical-length bars; per-line shows the distinct opportunities.</li>
     </ul>
 
     <h2>Core equations (brief §3)</h2>

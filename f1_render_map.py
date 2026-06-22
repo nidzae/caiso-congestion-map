@@ -580,36 +580,19 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
         ),
         xaxis=dict(title="spread ($/MWh) — stacked: D=2 base + 4h increment + 8h increment",
                     gridcolor="#eee"),
-        updatemenus=[dict(
-            type="buttons",
-            direction="right",
-            x=0.01, y=1.07, xanchor="left", yanchor="top",
-            showactive=True,
-            buttons=[
-                dict(label="Top nodes by spread (composite: D=2 + 4h-inc + 8h-inc)",
-                     method="update",
-                     args=[
-                         {"visible": [True, True, True, False]},
-                         {"xaxis.title.text": "spread ($/MWh) — stacked: D=2 base + 4h increment + 8h increment",
-                          "yaxis.categoryarray": bar_y_labels,
-                          "showlegend": True,
-                          "shapes": divider_shapes,
-                          "annotations": divider_annotations},
-                     ]),
-                dict(label="Top controlling constraints by rent ($)",
-                     method="update",
-                     args=[
-                         {"visible": [False, False, False, True]},
-                         {"xaxis.title.text": "constraint rent ($) = rating × Σ|μ|",
-                          "yaxis.categoryarray": grouped["short_label"].tolist(),
-                          "showlegend": False,
-                          "shapes": divider_shapes_grouped,
-                          "annotations": divider_annotations_grouped},
-                     ]),
-            ],
-        )],
+        # NOTE: view-toggle buttons (nodes vs constraints) live in the HTML
+        # toolbar above the chart, NOT inside Plotly. Plotly updatemenus
+        # buttons would auto-pad the top margin to fit their labels, creating
+        # a ~400px white gap before the first bar.
     )
-    return fig
+    return fig, {
+        "node_categories": bar_y_labels,
+        "constraint_categories": grouped["short_label"].tolist(),
+        "node_shapes": divider_shapes,
+        "node_annotations": divider_annotations,
+        "constraint_shapes": divider_shapes_grouped,
+        "constraint_annotations": divider_annotations_grouped,
+    }
 
 
 def build_month_nav(current_tag: str, all_tags: list[str]) -> str:
@@ -637,6 +620,7 @@ def build_page(map_html: str, bar_html: str,
                arch_trace_indices: dict | None = None,
                trace_opacity_normal: list | None = None,
                trace_opacity_hide: list | None = None,
+               bar_meta: dict | None = None,
                month_nav_html: str = "", current_tag: str = "") -> str:
     """Wrap the Plotly figure in an HTML shell with a corner legend and a
     slide-in README panel."""
@@ -684,6 +668,8 @@ def build_page(map_html: str, bar_html: str,
     # Per-trace opacity arrays for the TPP "hide-relief" toggle
     opacity_normal_json = json.dumps(trace_opacity_normal or [])
     opacity_hide_json = json.dumps(trace_opacity_hide or [])
+    # Bar-chart view metadata (categories + dividers per view)
+    bar_meta_json = json.dumps(bar_meta or {})
 
     return f"""<!doctype html>
 <html lang="en">
@@ -699,7 +685,15 @@ def build_page(map_html: str, bar_html: str,
   .view#view-bar {{ overflow-y:auto; background:#fafafa; }}
   .view#view-bar #bar-chart {{ background:#fff; min-height:100%; }}
   .view#view-bar .toolbar {{ padding:8px 14px; background:#fff; border-bottom:1px solid #e0e0e0;
-                              font-size:12px; color:#555; }}
+                              font-size:12px; color:#555; display:flex; align-items:center; gap:12px; }}
+  .bar-view-picker {{ display:flex; gap:0; }}
+  .bar-view-picker .bvbtn {{ font-size:12px; padding:5px 12px; border:1px solid #aaa;
+                              background:#fff; cursor:pointer; border-right:none; }}
+  .bar-view-picker .bvbtn:first-child {{ border-radius:4px 0 0 4px; }}
+  .bar-view-picker .bvbtn:last-child {{ border-radius:0 4px 4px 0; border-right:1px solid #aaa; }}
+  .bar-view-picker .bvbtn.active {{ background:#2a6ab8; color:#fff; border-color:#2a6ab8; font-weight:600; }}
+  .bar-view-picker .bvbtn:hover:not(.active) {{ background:#f0f0f0; }}
+  .bar-help {{ font-size:11.5px; color:#666; flex:1; line-height:1.4; }}
   #map {{ position:absolute; inset:0; }}
   /* Header bar */
   #header {{ position:absolute; top:0; left:0; right:0; height:42px; padding:0 14px;
@@ -1080,9 +1074,15 @@ hollow marker if  conc > 0.5</code>
 
 <div id="view-bar" class="view">
   <div class="toolbar">
-    Two ranked views — switch with the buttons inside the chart:
-    <b>(1) Top nodes by spread</b> — top {n_bar} of {n_metrics:,} metrics-ready nodes. Each bar is a <b>stacked composite</b>: innermost (faint) = D=2h base spread, middle = 4h increment, outer (most saturated) = 8h increment. Wide outer segments = duration-sensitive (longer batteries unlock more). <b>Dark gray outline</b> = unplaced node (not on map but metric is real). Hover any segment for its contribution + full sweep.
-    <b>(2) Top controlling constraints by rent</b> — one bar per physical line; size_node doesn't depend on D so this view has no D variant. Hover shows # nodes attributed.
+    <div class="bar-view-picker">
+      <button class="bvbtn active" data-view="nodes">Top nodes by spread</button>
+      <button class="bvbtn" data-view="constraints">Top constraints by rent</button>
+    </div>
+    <div class="bar-help">
+      <b>Nodes</b> view: each bar is a <b>stacked composite</b> — D=2h base + 4h increment + 8h increment. Wide outer segments = duration-sensitive. Dark gray outline = unplaced (not on map). Sorted unrelieved on top; orange divider marks where relieved bars begin.
+      &nbsp;·&nbsp;
+      <b>Constraints</b> view: one bar per physical transmission line, ordered by total rent (rating × Σ|μ|).
+    </div>
   </div>
   {bar_html}
 </div>
@@ -1132,6 +1132,41 @@ hollow marker if  conc > 0.5</code>
       }}
     }});
   }});
+
+  // Bar-chart view picker (nodes vs constraints) — drives Plotly.update on
+  // visible/categoryarray/title/shapes/annotations. Moved out of Plotly
+  // updatemenus because those would auto-reserve top margin for their label
+  // text and produced a large empty space above the first bar.
+  const BAR_META = {bar_meta_json};
+  const bvbtns = document.querySelectorAll(".bar-view-picker .bvbtn");
+  function setBarView(view) {{
+    bvbtns.forEach(b => b.classList.toggle("active", b.dataset.view === view));
+    const barDiv = document.getElementById("bar-chart");
+    if (!(window.Plotly && barDiv)) return;
+    if (view === "nodes") {{
+      Plotly.update(barDiv,
+        {{ visible: [true, true, true, false] }},
+        {{ "xaxis.title.text": "spread ($/MWh) — D=2 base + 4h increment + 8h increment",
+          "yaxis.categoryarray": BAR_META.node_categories,
+          showlegend: true,
+          shapes: BAR_META.node_shapes,
+          annotations: BAR_META.node_annotations }}
+      );
+    }} else {{
+      Plotly.update(barDiv,
+        {{ visible: [false, false, false, true] }},
+        {{ "xaxis.title.text": "constraint rent ($) = rating × Σ|μ|",
+          "yaxis.categoryarray": BAR_META.constraint_categories,
+          showlegend: false,
+          shapes: BAR_META.constraint_shapes,
+          annotations: BAR_META.constraint_annotations }}
+      );
+    }}
+    // Reset scroll so the first bar of the active view is visible.
+    const container = document.getElementById("view-bar");
+    if (container) container.scrollTop = 0;
+  }}
+  bvbtns.forEach(b => b.addEventListener("click", () => setBarView(b.dataset.view)));
 
   // Hide-relief toggle (TPP overlay): sets marker.opacity per-trace via Plotly.restyle
   const OPACITY_NORMAL = {opacity_normal_json};
@@ -1553,7 +1588,7 @@ def main():
 
     out_html = Path(page_filename(SEASON_TAG))
     map_html = fig.to_html(include_plotlyjs="cdn", full_html=False, div_id="map")
-    bar_fig = build_bar_chart(df_metrics)
+    bar_fig, bar_meta = build_bar_chart(df_metrics)
     bar_html = bar_fig.to_html(include_plotlyjs=False, full_html=False, div_id="bar-chart")
     n_bar_view = len(df_metrics) if BAR_TOP_N is None else min(BAR_TOP_N, len(df_metrics))
     page = build_page(map_html, bar_html,
@@ -1565,6 +1600,7 @@ def main():
                        arch_trace_indices=arch_trace_indices,
                        trace_opacity_normal=trace_opacity_normal,
                        trace_opacity_hide=trace_opacity_hide,
+                       bar_meta=bar_meta,
                        month_nav_html=month_nav,
                        current_tag=SEASON_TAG)
     out_html.write_text(page)

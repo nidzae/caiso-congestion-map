@@ -673,6 +673,10 @@ def build_page(map_html: str, bar_html: str,
                arch_trace_indices: dict | None = None,
                trace_opacity_normal: list | None = None,
                trace_opacity_hide: list | None = None,
+               trace_lat_normal: list | None = None,
+               trace_lon_normal: list | None = None,
+               trace_lat_hide: list | None = None,
+               trace_lon_hide: list | None = None,
                bar_meta: dict | None = None,
                month_nav_html: str = "", current_tag: str = "",
                tpp_sources: dict | None = None) -> str:
@@ -775,6 +779,47 @@ def build_page(map_html: str, bar_html: str,
        move; this URL has stayed stable for years) and consider the
        constraint's substation pair against any pending CPUC proceeding
        before acting on the absence of relief.</p>
+
+    <h3>How to read a TPP relief match</h3>
+    <p>The crosswalk attaches a project to a controlling line via three
+       passes, in <i>decreasing</i> strength. Match strength matters when
+       judging how much credence to give a hover entry:</p>
+    <ol>
+      <li><b>Direct endpoint match (strongest).</b> Project name contains
+          <b>both</b> substations of the controlling line — e.g.
+          "Panoche – Ora Loma 115 kV Reconductoring" against a
+          <code>LOSBANOS_230 – PANOCHE_230</code> constraint. The project
+          physically terminates at one of the constrained substations and
+          relieves that endpoint's loading directly.</li>
+      <li><b>Single-endpoint match.</b> Project touches one of the
+          controlling line's two substations (any project at Panoche, say).
+          Often relevant — a transformer upgrade at Panoche reduces
+          loading on lines feeding into Panoche — but less specific,
+          because the project might be relieving a different facility at
+          that substation.</li>
+      <li><b>WECC named-path bridge (broadest).</b> The constraint maps
+          to a named WECC path (Path 15, Path 26, etc.) and the project
+          touches <i>any</i> substation in that path's definition. This
+          is how we attach Gates 500 kV voltage-support projects or
+          Midway-Kern 230 kV capacity upgrades to a Los Banos – Panoche
+          constraint: those projects don't touch Los Banos or Panoche
+          directly, but they raise the corridor's transfer capability
+          (voltage stability for the 500 kV; parallel-path headroom for
+          the 230 kV), which de-binds the constrained branch indirectly.
+          Physically real, but the loosest match — a project on a small
+          substation in the Path 15 set may have negligible effect on
+          your specific constraint.</li>
+    </ol>
+    <p>Combine this with the <b>"controlling line ≠ electrically on"</b>
+       caveat from the Ridge-regression note above. When a node co-moves
+       with a constraint without sitting on it, "TPP relief" means the
+       <b>price spread at the node will fade</b> as the constraint
+       de-binds — not that a battery sited at the node directly relieves
+       the wire. The actionable read is "expect this node's size to
+       shrink as the matched projects come into service." And the
+       <code>slipped X yr</code> column matters: heavily-slipped projects
+       (8+ yr) are realistic to slip again, so don't bank on early
+       in-service dates without reading the project's notes.</p>
     """
 
     # Active-class strings for the duration picker buttons
@@ -783,9 +828,17 @@ def build_page(map_html: str, bar_html: str,
     duration_colors_json = json.dumps({str(D): trace_colors_by_d[D] for D in DURATIONS})
     # Per-archetype trace indices — for click-to-toggle visibility in the legend
     arch_traces_json = json.dumps(arch_trace_indices or {})
-    # Per-trace opacity arrays for the TPP "hide-relief" toggle
+    # Per-trace opacity arrays for the TPP "hide-relief" toggle (legacy,
+    # not used by the current toggle but kept available if needed).
     opacity_normal_json = json.dumps(trace_opacity_normal or [])
     opacity_hide_json = json.dumps(trace_opacity_hide or [])
+    # Per-trace lat/lon arrays for the TPP "hide-relief" toggle. Scattermap
+    # ignores per-point marker.opacity, so we restyle lat/lon between the
+    # full ("normal") and partial ("hide" = relieved points → null) sets.
+    lat_normal_json = json.dumps(trace_lat_normal or [])
+    lon_normal_json = json.dumps(trace_lon_normal or [])
+    lat_hide_json = json.dumps(trace_lat_hide or [])
+    lon_hide_json = json.dumps(trace_lon_hide or [])
     # Bar-chart view metadata (categories + dividers per view)
     bar_meta_json = json.dumps(bar_meta or {})
 
@@ -1143,6 +1196,27 @@ size_node = rating[k*]  ×  Σ<sub>t</sub> |μ<sub>k*</sub>(t)|     (the dollar 
       <dt>Σ<sub>k</sub></dt><dd>sum over all constraints <code>k</code> in the panel.</dd>
       <dt>argmax<sub>k</sub></dt><dd>"the value of k that makes the following expression largest" — picks the dominant constraint.</dd>
     </dl>
+    <p><b>Why Ridge, not OLS.</b> Constraint shadow prices are strongly
+       collinear — Path-15-area constraints, for example, tend to bind
+       together — so plain OLS produces cancellation artifacts (β of
+       ±billions that sum to near-zero). Ridge (α = 10) shrinks
+       coefficients toward zero, giving stable, interpretable β even on
+       highly correlated regressors. The trade-off is bias: β are
+       systematically smaller than the "true" shift factors. We accept
+       that because the <i>ranking</i> of constraints by |β·μ| is what
+       drives k*, and the ranking is robust to the shrinkage.</p>
+    <p><b>"Controlling line" doesn't mean "electrically on."</b> Ridge
+       finds the constraint whose shadow price best <i>predicts</i> a
+       node's MCC variation. That can be a constraint the node is
+       directly behind, or a regional constraint whose binding hours
+       correlate with whatever else moves prices in the node's
+       neighborhood. A WHITE node (no local-congestion archetype) can
+       still have a meaningful k* this way — it just means the node
+       <i>co-moves</i> with that constraint rather than sitting on it.
+       For battery siting, treat this as a price-spread signal at the
+       node, not as a claim that a battery at the node would directly
+       relieve the wire. This is the same distinction that drives the
+       "How to read a TPP relief match" note below.</p>
 
     <h3>Bankability (concentration)</h3>
     <code class="eq">conc = (sum of |MCC| in the top 1% of 5-min intervals)
@@ -1324,22 +1398,28 @@ hollow marker if  conc > 0.5</code>
   }}
   bvbtns.forEach(b => b.addEventListener("click", () => setBarView(b.dataset.view)));
 
-  // Hide-relief toggle (TPP overlay): sets marker.opacity per-trace via Plotly.restyle
-  const OPACITY_NORMAL = {opacity_normal_json};
-  const OPACITY_HIDE   = {opacity_hide_json};
+  // Hide-relief toggle (TPP overlay). Scattermap (MapLibre) does NOT honor
+  // per-point marker.opacity arrays — that attribute is a scalar on that
+  // trace type. So instead we restyle the lat/lon arrays themselves: the
+  // "hide" variants have relieved points set to null, and Plotly skips
+  // null coords. Customdata stays index-aligned so hover still works for
+  // the remaining points.
+  const LAT_NORMAL = {lat_normal_json};
+  const LON_NORMAL = {lon_normal_json};
+  const LAT_HIDE   = {lat_hide_json};
+  const LON_HIDE   = {lon_hide_json};
   const reliefBtn = document.getElementById("hide-relief-btn");
   reliefBtn.addEventListener("click", () => {{
     const turnOn = !reliefBtn.classList.contains("on");
     reliefBtn.classList.toggle("on", turnOn);
     reliefBtn.textContent = turnOn ? "Show all nodes" : "Hide nodes with TPP relief";
     const mapDiv = document.getElementById("map");
-    if (window.Plotly && mapDiv) {{
-      const arrs = turnOn ? OPACITY_HIDE : OPACITY_NORMAL;
-      // Plotly expects an array of arrays for per-marker opacity, indexed by trace.
-      // Build the trace-index list explicitly (0..n-1).
-      const traceIdx = arrs.map((_, i) => i);
-      Plotly.restyle(mapDiv, {{ "marker.opacity": arrs }}, traceIdx);
-    }}
+    if (!window.Plotly || !mapDiv) return;
+    const lats = turnOn ? LAT_HIDE : LAT_NORMAL;
+    const lons = turnOn ? LON_HIDE : LON_NORMAL;
+    if (!lats.length) return;
+    const traceIdx = lats.map((_, i) => i);
+    Plotly.restyle(mapDiv, {{ "lat": lats, "lon": lons }}, traceIdx);
   }});
 
   // Click-to-toggle archetype visibility on the map.
@@ -1577,10 +1657,19 @@ def main():
     # array). We treat the hollow-inner white traces as belonging to their
     # archetype too so they hide together.
     arch_trace_indices: dict[str, list[int]] = {a: [] for a in order}
-    # For the "hide constraints with TPP relief" toggle: per-trace,
-    # per-marker opacity arrays. opacity_normal = 1.0 everywhere;
-    # opacity_hide_relief = 0.0 for markers whose k* has a TPP project,
-    # 1.0 otherwise. Restyle marker.opacity with one of the two.
+    # For the "hide constraints with TPP relief" toggle: per-trace, per-marker
+    # lat/lon arrays. The Plotly Scattermap (MapLibre) trace does NOT support
+    # per-point marker.opacity arrays (marker.opacity is a single scalar),
+    # but `lat` and `lon` ARE arrayOk and Plotly skips points where either
+    # is null. So we keep TWO copies of lat/lon per trace — one with all
+    # points (normal) and one with relieved points set to null (hide) —
+    # and the toggle restyles between them.
+    trace_lat_normal: list = []
+    trace_lon_normal: list = []
+    trace_lat_hide: list = []
+    trace_lon_hide: list = []
+    # Legacy opacity arrays kept for backward compat with anything still
+    # reading them; not used by the toggle anymore.
     trace_opacity_normal: list = []
     trace_opacity_hide: list = []
     trace_idx = 0
@@ -1657,6 +1746,18 @@ def main():
         filled = sub[sub["marker"] == "filled"]
         hollow = sub[sub["marker"] == "hollow"]
 
+        # Helper: build the "hide" lat/lon arrays for a sub-frame.
+        # Relieved nodes get their lat/lon nulled out so Plotly skips them
+        # while leaving the customdata indices intact for the other points.
+        def _hide_coords(df_sub):
+            rel = df_sub.get("has_tpp_relief",
+                              pd.Series(False, index=df_sub.index)).fillna(False)
+            lats = [None if bool(r) else float(la)
+                    for la, r in zip(df_sub["Latitude"], rel)]
+            lons = [None if bool(r) else float(lo)
+                    for lo, r in zip(df_sub["Longitude"], rel)]
+            return lats, lons
+
         label = ARCHETYPE_LABEL[arch]
         if not filled.empty:
             mask = sub["marker"] == "filled"
@@ -1675,6 +1776,11 @@ def main():
                 trace_colors_by_d[D].append(filled[f"color_D{D}"].tolist())
             arch_trace_indices[arch].append(trace_idx)
             n = len(filled)
+            trace_lat_normal.append(filled["Latitude"].astype(float).tolist())
+            trace_lon_normal.append(filled["Longitude"].astype(float).tolist())
+            lat_h, lon_h = _hide_coords(filled)
+            trace_lat_hide.append(lat_h)
+            trace_lon_hide.append(lon_h)
             trace_opacity_normal.append([1.0] * n)
             relief_flags = filled.get("has_tpp_relief",
                                        pd.Series(False, index=filled.index))
@@ -1699,6 +1805,11 @@ def main():
                 trace_colors_by_d[D].append(hollow[f"color_D{D}"].tolist())
             arch_trace_indices[arch].append(trace_idx)
             n_h = len(hollow)
+            trace_lat_normal.append(hollow["Latitude"].astype(float).tolist())
+            trace_lon_normal.append(hollow["Longitude"].astype(float).tolist())
+            lat_h, lon_h = _hide_coords(hollow)
+            trace_lat_hide.append(lat_h)
+            trace_lon_hide.append(lon_h)
             trace_opacity_normal.append([1.0] * n_h)
             relief_flags_h = hollow.get("has_tpp_relief",
                                           pd.Series(False, index=hollow.index))
@@ -1717,6 +1828,10 @@ def main():
             for D in DURATIONS:
                 trace_colors_by_d[D].append("white")
             arch_trace_indices[arch].append(trace_idx)
+            trace_lat_normal.append(hollow["Latitude"].astype(float).tolist())
+            trace_lon_normal.append(hollow["Longitude"].astype(float).tolist())
+            trace_lat_hide.append(lat_h)  # same nodes — hide the inner white too
+            trace_lon_hide.append(lon_h)
             trace_opacity_normal.append([1.0] * n_h)
             trace_opacity_hide.append(relief_h_list)  # same nodes -> hide the inner white too
             trace_idx += 1
@@ -1773,6 +1888,10 @@ def main():
                        arch_trace_indices=arch_trace_indices,
                        trace_opacity_normal=trace_opacity_normal,
                        trace_opacity_hide=trace_opacity_hide,
+                       trace_lat_normal=trace_lat_normal,
+                       trace_lon_normal=trace_lon_normal,
+                       trace_lat_hide=trace_lat_hide,
+                       trace_lon_hide=trace_lon_hide,
                        bar_meta=bar_meta,
                        month_nav_html=month_nav,
                        current_tag=SEASON_TAG,

@@ -76,6 +76,35 @@ ABBREV_ALIAS = {
     "SENTI":    57482,
 }
 
+# Abbreviations the matcher must REFUSE to place — even if the fuzzy
+# matcher finds something. Use this when the abbreviation has no plausible
+# EIA-860 plant (e.g., it's a substation, an aggregator, or a generic name
+# whose letters happen to subseq-match an unrelated plant elsewhere in the
+# state). The IVGEN case (Imperial Valley generic, was matching "rIVer
+# coGenEratioN" 300mi away) is the canonical seed; the audit script
+# populates the rest.
+REJECTED_ABBREVS: set[str] = {
+    "IVGEN",  # "Imperial Valley generator generic" — no single EIA plant
+}
+
+# The LLM audit emits a companion file placement_overrides.py with two
+# names: AUDIT_ALIAS_ADDITIONS (dict, merges into ABBREV_ALIAS) and
+# AUDIT_REJECTIONS (set, unions into REJECTED_ABBREVS). Kept in a
+# separate file so hand-curated entries above stay distinct from
+# audit-derived ones.
+try:
+    import placement_overrides  # type: ignore
+    ABBREV_ALIAS.update(getattr(placement_overrides, "AUDIT_ALIAS_ADDITIONS", {}))
+    REJECTED_ABBREVS |= getattr(placement_overrides, "AUDIT_REJECTIONS", set())
+    log_msg = (
+        f"[overrides] +{len(getattr(placement_overrides, 'AUDIT_ALIAS_ADDITIONS', {}))}"
+        f" alias entries, +{len(getattr(placement_overrides, 'AUDIT_REJECTIONS', set()))}"
+        f" rejections from placement_overrides.py"
+    )
+    print(log_msg, flush=True)
+except ImportError:
+    pass
+
 
 def log(msg):
     import time
@@ -210,6 +239,12 @@ def best_match(abbrev: str, preferred_bas: list[str], state_fallback: list[str])
         code = ABBREV_ALIAS[abbrev]
         if code in plant_by_code:
             return plant_by_code[code], 99, 0
+    # Rejection short-circuit — abbreviations the audit (or hand-curated
+    # list) has explicitly flagged as "no good plant match exists; do not
+    # place." Returning early prevents the fuzzy matcher from inventing a
+    # placement just because the letters subseq-match an unrelated plant.
+    if abbrev in REJECTED_ABBREVS:
+        return None, 0, 0
 
     def scan(indices):
         best_key = (0.0, 0, 0)

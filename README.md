@@ -149,3 +149,10 @@ The deliverable HTML is `index.html` (also saved as `caiso_congestion_map_summer
 - [CAISO OASIS](http://oasis.caiso.com) (via [`gridstatus`](https://github.com/kmax12/gridstatus)): 5-min RTM LMP with congestion component, plus nomogram + intertie shadow prices
 - [WECC 2026 Path Rating Catalog (Public)](https://www.wecc.org/wecc-document/26556): named transmission-path MW ratings
 - [EIA-860](https://www.eia.gov/electricity/data/eia860/) 2025 Early Release: generating-plant coordinates
+- **TPP (transmission relief overlay)** — every fact is hyperlinked in the
+  map's slide-in panel and in the per-node hover. The three sources we
+  currently ingest, in order of strength:
+  - [CAISO Approved Projects XLSX (Jul-2025)](https://www.caiso.com/documents/approved-projects-transmission-planning-process-jul-2025.xlsx) — the canonical cross-PTO machine-readable list (PG&E, SCE, SDG&E, VEA/GLW, DCR Transmission, LS Power, Citizens Energy, Lotus, HWT). Refreshes semi-annually; `download_tpp.py` probes for newer vintages first.
+  - [CAISO 2024-2025 Board-Approved Transmission Plan, Appendix H](https://www.caiso.com/documents/appendix-h-board-approved-2024-2025-transmission-plan.pdf) — narrative project descriptions, objectives, and project need dates joined by fuzzy name match to the XLSX.
+  - [CAISO Approved Projects Attachment 1 (Oct 2025, SCE)](https://www.caiso.com/documents/attachment-1-approved-projects-transmission-planning-process-oct-2025.pdf) — kept as a supplemental fallback for SCE free-text status fields.
+  - **Not yet integrated** (roadmap): CPUC docket / CPCN proceedings. A constraint flagged "no record found" here may have a pending proceeding at the [CPUC Proceedings database](https://apps.cpuc.ca.gov/apex/f?p=401:1). Always cross-check before acting on the absence of relief.

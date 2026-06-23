@@ -33,7 +33,33 @@ def ceil_int(x):
     return int(math.ceil(x))
 
 DATA_DIR = Path("data")
+TPP_SOURCES_PATH = DATA_DIR / "tpp" / "sources.json"
 SEASON_TAG = "2025-full"  # default to the Full Year aggregate
+
+
+def load_tpp_sources() -> dict:
+    """Read the source manifest emitted by download_tpp.py — used to build
+    hyperlinks in both the per-node hover and the README panel. Returns
+    an empty dict if missing (graceful degradation for older builds)."""
+    if not TPP_SOURCES_PATH.exists():
+        return {}
+    try:
+        return json.loads(TPP_SOURCES_PATH.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def src_link(label: str | None, url: str | None) -> str:
+    """Render a hyperlink whose anchor text describes the source — never
+    use bare URLs or generic "[source]". If the URL is missing, fall back
+    to plain text. (Honest attribution: future readers can manually search
+    for the document by name if the URL ever breaks.)"""
+    if not label:
+        return ""
+    if not url:
+        return label
+    return (f'<a href="{url}" target="_blank" rel="noopener" '
+            f'style="color:#2a6ab8">{label}</a>')
 # CLI: python3 f1_render_map.py [SEASON_TAG]
 if len(sys.argv) >= 2 and not sys.argv[1].startswith("-"):
     SEASON_TAG = sys.argv[1]
@@ -294,7 +320,8 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     )
     # Carry TPP fields through (first(); they're constant per controlling line)
     for c in ("n_tpp_projects", "earliest_isd_active",
-                "oldest_plan_year", "max_slip_years", "projects_summary"):
+                "oldest_plan_year", "max_slip_years", "projects_summary",
+                "projects_summary_html", "sources_checked_html"):
         if c in has_constraint.columns:
             agg_dict[c] = (c, "first")
     grouped = has_constraint.groupby("kstar_physical_line").agg(**agg_dict).copy()
@@ -358,10 +385,15 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             rating = r["rating"]
             rating_str = (f"{rating:.0f} MW" if pd.notna(rating) and rating > 0
                           else "(unknown)")
-            # TPP block
+            # TPP block (uses HTML version with hyperlinked source labels);
+            # full canonical source list lives in the README panel.
             n_tpp = int(r.get("n_tpp_projects") or 0)
+            sources_tail = (
+                "<br><span style='color:#888;font-size:11px'>"
+                "📎 source list: open the <b>📘 How to read this</b> panel.</span>"
+            )
             if n_tpp == 0:
-                tpp_block = "⚠️ no match in our (partial) TPP data — see note below"
+                tpp_block = ("⚠️ no record found in our TPP sources" + sources_tail)
             else:
                 head = [f"{n_tpp} project{'s' if n_tpp != 1 else ''}"]
                 ei = r.get("earliest_isd_active")
@@ -370,9 +402,10 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
                     head.append(f"earliest ISD {int(ei)}")
                 if isinstance(ms, (int, float)) and not pd.isna(ms) and ms > 0:
                     head.append(f"max slip {int(ms)} yr")
-                summary = r.get("projects_summary") or ""
-                short = summary[:220] + ("…" if len(summary) > 220 else "")
-                tpp_block = " — ".join(head) + "<br>&nbsp;&nbsp;&nbsp;" + short
+                summary_html = (r.get("projects_summary_html")
+                                 or r.get("projects_summary") or "")
+                short = summary_html[:1200] + ("…" if len(summary_html) > 1200 else "")
+                tpp_block = " — ".join(head) + "<br>" + short + sources_tail
             out.append(
                 f"<b>{line}</b><br>"
                 f"<b>Size (rent):</b> ${r['size']:,.0f}<br>"
@@ -404,11 +437,23 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             return f"{lbl}  (CV {cv:.2f})"
         return lbl
 
+    # Sources are listed once in the slide-in panel ("📘 How to read this");
+    # the per-node hover just notes that. Inlining the full source list per
+    # node bloats the page weight to >2 MB.
+    SOURCES_HINT = (
+        "<br><span style='color:#888;font-size:11px'>"
+        "📎 source list: open the <b>📘 How to read this</b> panel.</span>"
+    )
+
     def _tpp_for_hover(r):
         n = int(r.get("n_tpp_projects") or 0)
         if n == 0:
-            return "⚠️ no match in our (partial) TPP data — could be a coverage gap, not absence of relief"
-        summary = r.get("projects_summary") or ""
+            return (
+                "⚠️ no record found in our TPP sources — could be a coverage "
+                "gap (e.g. local 60-115 kV project not in CAISO TPP yet) or "
+                "true absence of relief." + SOURCES_HINT
+            )
+        summary_html = r.get("projects_summary_html") or r.get("projects_summary") or ""
         earliest = r.get("earliest_isd_active")
         slip = r.get("max_slip_years")
         head_bits = [f"{n} project{'s' if n != 1 else ''}"]
@@ -416,8 +461,11 @@ def build_bar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             head_bits.append(f"earliest ISD {int(earliest)}")
         if isinstance(slip, (int, float)) and not pd.isna(slip) and slip > 0:
             head_bits.append(f"max slip {int(slip)} yr")
-        short = summary[:220] + ("…" if len(summary) > 220 else "")
-        return " — ".join(head_bits) + "<br>&nbsp;&nbsp;&nbsp;" + short
+        # Truncate the rich summary — per-project source links stay (they
+        # belong to individual projects, not boilerplate). 1200 chars
+        # ≈ 2-3 projects with their source hyperlinks.
+        short = summary_html[:1200] + ("…" if len(summary_html) > 1200 else "")
+        return (" — ".join(head_bits) + "<br>" + short + SOURCES_HINT)
 
     def make_bar_hovertext(d: pd.DataFrame) -> list:
         """One hover entry per node — same text for every segment, so hovering
@@ -626,7 +674,8 @@ def build_page(map_html: str, bar_html: str,
                trace_opacity_normal: list | None = None,
                trace_opacity_hide: list | None = None,
                bar_meta: dict | None = None,
-               month_nav_html: str = "", current_tag: str = "") -> str:
+               month_nav_html: str = "", current_tag: str = "",
+               tpp_sources: dict | None = None) -> str:
     """Wrap the Plotly figure in an HTML shell with a corner legend and a
     slide-in README panel."""
     # Color swatches for the corner legend — sample at the highest quintile
@@ -663,6 +712,70 @@ def build_page(map_html: str, bar_html: str,
         )
 
     gradient_bars = "\n".join(gradient_html(a) for a in ["BLUE", "RED", "PURPLE", "WHITE"])
+
+    # ----- TPP-sources block for the README panel -----
+    # Real clickable hyperlinks with descriptive anchor text (org + doc name).
+    # If the manifest is missing, fall back to a generic link to the CAISO
+    # transmission-planning landing page.
+    tpp_sources = tpp_sources or {}
+    xlsx_meta = tpp_sources.get("xlsx") or {}
+    appx_meta = tpp_sources.get("appendix_h") or {}
+    pdf_meta = tpp_sources.get("pdf_sce") or {}
+    xlsx_lnk = src_link(xlsx_meta.get("label"), xlsx_meta.get("url")) or (
+        '<a href="https://www.caiso.com/generation-transmission/transmission/transmission-planning" '
+        'target="_blank" rel="noopener">CAISO Transmission Planning landing page</a>'
+    )
+    appx_lnk = src_link(appx_meta.get("label"), appx_meta.get("url"))
+    pdf_lnk = src_link(pdf_meta.get("label"), pdf_meta.get("url"))
+    caiso_landing_lnk = (
+        '<a href="https://www.caiso.com/generation-transmission/transmission/transmission-planning" '
+        'target="_blank" rel="noopener">CAISO Transmission Planning landing page</a>'
+    )
+    tpp_sources_html = f"""
+    <h2>⚠ TPP relief — what we cover and what we don't</h2>
+    <p>The hover field <b>TPP relief</b> joins each node's controlling
+       transmission line against three machine-readable CAISO sources:</p>
+    <ul>
+      <li>{xlsx_lnk} — the canonical cross-PTO machine-readable list of
+          every active project under the CAISO Transmission Planning
+          Process. Covers PG&amp;E, SCE, SDG&amp;E, VEA/GLW, DCR Transmission,
+          LS Power, Citizens Energy, Lotus, and HWT. Refreshed semi-annually
+          at each Transmission Development Forum.</li>
+      <li>{appx_lnk if appx_lnk else 'Appendix H of the Board-Approved Transmission Plan (per-project narratives)'}
+          — narrative descriptions, objectives, and project need dates for
+          ~30 projects from the latest planning cycle. Joined to the XLSX
+          by fuzzy name match so the hover can show "what the project
+          actually does" alongside the schedule.</li>
+      <li>{pdf_lnk if pdf_lnk else 'CAISO Approved Projects Attachment 1 (SCE)'}
+          — kept as a supplemental fallback (richer free-text status fields
+          for SCE projects).</li>
+    </ul>
+    <p>What is still missing:</p>
+    <ul>
+      <li><b>CPUC dockets.</b> Some constraints that look unrelieved here
+          may have a CPCN (Certificate of Public Convenience and Necessity)
+          proceeding pending at the CPUC — that step happens AFTER CAISO
+          approval but BEFORE the project appears as "Construction" status.
+          Roadmapped; not yet integrated.</li>
+      <li><b>Power flow.</b> The crosswalk matches a project to a
+          constraint only when the project name contains the constraint's
+          substation pair (with a WECC-named-path bridge for major
+          corridors). A new 500 kV backbone elsewhere can relieve adjacent
+          115/230 kV constraints via network effects that only a PTDF-based
+          simulation would catch.</li>
+      <li><b>Distribution-level constraints.</b> Many 60–115 kV local
+          constraints are addressed inside utility general rate cases, not
+          CAISO TPP. Those won't appear in any of our sources.</li>
+    </ul>
+    <p><b>Net interpretation:</b> when the hover says
+       <code>⚠️ no record found in our TPP sources</code>, treat it as
+       "we couldn't find one in the sources listed above" rather than
+       "no project exists." Always cross-check against the
+       {caiso_landing_lnk} (the canonical entry point — published documents
+       move; this URL has stayed stable for years) and consider the
+       constraint's substation pair against any pending CPUC proceeding
+       before acting on the absence of relief.</p>
+    """
 
     # Active-class strings for the duration picker buttons
     active_class = {D: (" active" if D == DEFAULT_DURATION else "") for D in DURATIONS}
@@ -1087,38 +1200,7 @@ hollow marker if  conc > 0.5</code>
        bus suffixes (<code>_B1</code> vs <code>_B2</code>) usually indicate
        which bus is which.</p>
 
-    <h2>⚠ TPP relief data is incomplete</h2>
-    <p>The hover field <b>TPP relief</b> joins each node's controlling
-       transmission line against the CAISO Transmission Planning Process
-       project list. Two important caveats:</p>
-    <ul>
-      <li><b>Our TPP file is not the full CAISO list.</b> The single
-          machine-readable attachment we pull
-          (<a href="https://www.caiso.com/documents/attachment-1-approved-projects-transmission-planning-process-oct-2025.pdf" target="_blank" rel="noopener">attachment 1, Oct 2025</a>)
-          is <b>SCE territory only</b>. PG&amp;E projects (which control
-          Path 15 = Los Banos-Panoche and most NorCal corridors), SDG&amp;E,
-          VEA, and TANC projects live in different attachments and chapters
-          of the 700+ page main Transmission Plan that aren't easily
-          machine-readable. We've hand-added the two PG&amp;E projects named
-          in Appendix I (Manning–Metcalf 500 kV and NRS–San Jose B 230 kV)
-          but the bulk of PG&amp;E work is missing.</li>
-      <li><b>We don't do power-flow.</b> The crosswalk matches a project to
-          a constraint only when the project name contains the constraint's
-          substation pair (or a WECC-named-path bridge). A new 500 kV
-          backbone elsewhere can relieve adjacent 115/230 kV constraints via
-          network effects that only a PTDF-based simulation would catch —
-          those are invisible to us.</li>
-      <li><b>Unplaced nodes are no different.</b> The TPP join is on the
-          controlling-line key, not coordinates, so unplaced nodes get the
-          same join as placed ones. Both inherit the same incomplete-TPP
-          limitation above.</li>
-    </ul>
-    <p><b>Net interpretation:</b> when the hover says
-       <code>⚠️ no match in our (partial) TPP data</code>, treat it as
-       "we couldn't find one in our limited data" rather than "no project
-       exists". Confirm against the
-       <a href="https://www.caiso.com/generation-transmission/transmission/transmission-planning" target="_blank" rel="noopener">full CAISO Transmission Plan</a>
-       before acting on the absence of relief.</p>
+    {tpp_sources_html}
 
     <h2>Other limitations</h2>
     <ul>
@@ -1361,9 +1443,16 @@ def main():
     tpp_path = DATA_DIR / "tpp_crosswalk.csv"
     if tpp_path.exists() and "n_tpp_projects" not in df_metrics.columns:
         tpp = pd.read_csv(tpp_path).set_index("physical_line")
-        tpp = tpp[["n_tpp_projects", "earliest_isd_active",
-                    "oldest_plan_year", "max_slip_years",
-                    "projects_summary"]]
+        # projects_summary_html + sources_checked_html carry the rich,
+        # hyperlinked TPP content for the hover. Older crosswalks didn't
+        # have them — fall back to text-only.
+        keep = ["n_tpp_projects", "earliest_isd_active",
+                 "oldest_plan_year", "max_slip_years",
+                 "projects_summary"]
+        for c in ("projects_summary_html", "sources_checked_html"):
+            if c in tpp.columns:
+                keep.append(c)
+        tpp = tpp[keep]
         # merge on the controlling-line column
         if "kstar_physical_line" in df_metrics.columns:
             merged = df_metrics.merge(
@@ -1517,11 +1606,22 @@ def main():
                 return lbl
             return "n/a"
 
+        # Same SOURCES_HINT pattern as the bar-chart hover — full list lives
+        # in the README panel.
+        SOURCES_HINT_MAP = (
+            "<br><span style='color:#888;font-size:11px'>"
+            "📎 source list: open the <b>📘 How to read this</b> panel.</span>"
+        )
+
         def tpp_str(row):
             n = int(row.get("n_tpp_projects") or 0)
             if n == 0:
-                return "⚠️ no match in our (partial) TPP data — could be a coverage gap, not absence of relief"
-            summary = row.get("projects_summary") or ""
+                return (
+                    "⚠️ no record found in our TPP sources — could be a "
+                    "coverage gap or true absence of relief." + SOURCES_HINT_MAP
+                )
+            summary_html = (row.get("projects_summary_html")
+                             or row.get("projects_summary") or "")
             earliest = row.get("earliest_isd_active")
             slip = row.get("max_slip_years")
             head_bits = [f"{n} project{'s' if n != 1 else ''}"]
@@ -1530,9 +1630,8 @@ def main():
             if isinstance(slip, (int, float)) and not pd.isna(slip) and slip > 0:
                 head_bits.append(f"max slip {int(slip)} yr")
             head = " — ".join(head_bits)
-            # truncate the summary so the tooltip stays readable
-            short = summary[:220] + ("…" if len(summary) > 220 else "")
-            return f"{head}<br>&nbsp;&nbsp;&nbsp;{short}"
+            short = summary_html[:1200] + ("…" if len(summary_html) > 1200 else "")
+            return f"{head}<br>{short}{SOURCES_HINT_MAP}"
 
         persistence_arr = [persistence_str(r) for _, r in sub.iterrows()]
         tpp_arr = [tpp_str(r) for _, r in sub.iterrows()]
@@ -1676,7 +1775,8 @@ def main():
                        trace_opacity_hide=trace_opacity_hide,
                        bar_meta=bar_meta,
                        month_nav_html=month_nav,
-                       current_tag=SEASON_TAG)
+                       current_tag=SEASON_TAG,
+                       tpp_sources=load_tpp_sources())
     out_html.write_text(page)
     print(f"saved {out_html.resolve()}")
     # index.html mirrors the FULL YEAR view (default landing page).

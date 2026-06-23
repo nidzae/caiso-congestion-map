@@ -138,9 +138,13 @@ if persist_path.exists():
 tpp_path = DATA / "tpp_crosswalk.csv"
 if tpp_path.exists():
     tpp = pd.read_csv(tpp_path).set_index("physical_line")
-    tpp = tpp[["n_tpp_projects", "earliest_isd_active",
-                "oldest_plan_year", "max_slip_years",
-                "projects_summary"]]
+    keep_tpp = ["n_tpp_projects", "earliest_isd_active",
+                 "oldest_plan_year", "max_slip_years",
+                 "projects_summary"]
+    for c in ("projects_summary_html", "sources_checked_html"):
+        if c in tpp.columns:
+            keep_tpp.append(c)
+    tpp = tpp[keep_tpp]
     # Join on the controlling-line key
     if "kstar_physical_line" in agg_out.columns:
         joined = agg_out.merge(tpp, how="left",
